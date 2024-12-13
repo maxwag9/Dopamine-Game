@@ -1,0 +1,26 @@
+<upgrades>
+    <!-- Upgrade to increase enemy count -->
+    <upgrade name="More Enemies" cost="50" level="1" description="Increases enemy count by 20%">
+        <effect type="enemy_count" amount="20" id="0" connection="026"/>
+    </upgrade>
+
+    <!-- Upgrade to increase damage dealt -->
+    <upgrade name="More Damage" cost="100" level="1" description="Increases damage dealt by 10%">
+        <effect type="damage" amount="10" id="1" connection="164"/>
+    </upgrade>
+
+    <!-- Upgrade to extend game time -->
+    <upgrade name="More Time" cost="75" level="1" description="Extends time limit by 30 seconds">
+        <effect type="time" amount="30" id="2" connection="1"/>
+    </upgrade>
+
+    <!-- Upgrade to increase shooting speed -->
+    <upgrade name="Faster Shooting" cost="120" level="2" description="Increases shooting speed by 15%">
+        <effect type="shooting_speed" amount="15" id="3" connection="0"/>
+    </upgrade>
+
+    <!-- Upgrade to increase crosshair size for easier aiming -->
+    <upgrade name="Bigger Crosshair" cost="60" level="2" description="Increases crosshair size by 25%">
+        <effect type="crosshair_size" amount="25" id="4" connection="0"/>
+    </upgrade>
+</upgrades>
