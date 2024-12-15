@@ -906,6 +906,8 @@ class Menu:
             if crosshair.crosshair_list:
                 for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
                     crosshair.crosshair_list.pop(i + 1)
+            self.button(screen.get_width() / 2 - 175, 50, 350, 60, bg_color,
+                        bg_color, 0.5, "Hello there "+str(user_name)+"!", "Username BL")
             self.button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 300, 350, 70, (220, 10, 0),
                         (220, 100, 80), 0.5, "Play", "Play BL")
             self.button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 200, 350, 60, (220, 10, 0),
@@ -953,7 +955,7 @@ class Menu:
     def button(self, pos_x, pos_y, width, height, color1, color2, shadow_factor, label, button_label,
                switch_state=None, switch_states_amount=None, dependent_position=None):
         if dependent_position is None:
-            dependent_position = (pos_x, pos_y)
+            False
         if switch_state is not None:
             switch_properties = {
                 "pos_x": pos_x,
