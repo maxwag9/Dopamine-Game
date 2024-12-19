@@ -1,11 +1,12 @@
 import math
 import os
-import pygame
 import random
 import xml.etree.ElementTree as ET
-from xml.dom import minidom
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
+from xml.dom import minidom
+
+import pygame
 
 pygame.init()
 screen = pygame.display.set_mode((2560, 1100), pygame.HWSURFACE | pygame.DOUBLEBUF)
@@ -659,7 +660,7 @@ class Enemy:
             if abs(red_nemesis["pos_x"]) > screen_width * 2 or abs(red_nemesis["pos_y"]) > screen_height * 2:
                 self.red_nemesis_list.pop(i)
                 print("Enemy 'optimized', Enemy amount: " + str(len(self.red_nemesis_list)))
-            if len(self.red_nemesis_list) < 70:
+            if len(self.red_nemesis_list) < 700:
                 self.wave()
 
     def choose_random_props(self):
@@ -883,6 +884,7 @@ class Crosshair:
 
 class Menu:
     def __init__(self, init_menu_type):
+        self.font_cache = {}
         self.button_list = []
         self.switch_list = []
         self.shadow_movement = 2
@@ -906,8 +908,8 @@ class Menu:
             if crosshair.crosshair_list:
                 for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
                     crosshair.crosshair_list.pop(i + 1)
-            self.button(screen.get_width() / 2 - 175, 50, 350, 60, bg_color,
-                        bg_color, 0.5, "Hello there "+str(user_name)+"!", "Username BL")
+            self.button(50, 500, 500, 60, (0, 0, 255),
+                        (100, 100, 80), 0.5, "Ball", "Ball BL")
             self.button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 300, 350, 70, (220, 10, 0),
                         (220, 100, 80), 0.5, "Play", "Play BL")
             self.button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 200, 350, 60, (220, 10, 0),
@@ -945,8 +947,10 @@ class Menu:
         if menu_type == 99:
             self.button(screen.get_width() / 7, 10, 100, 40, (220, 10, 0), (220, 100, 80),
                         0.5, "Main menu", "Main menu 2 BL")
-            game_state.apply_load_ingame()
+            self.button(screen.get_width() / 5, 10, 100, 40, (220, 10, 0), (220, 100, 80),
+                        0.5, "Upgrades", "Upgrade menu BL")
             if bl != "Back to the game BL":
+                game_state.apply_load_ingame()
                 enemies.wave()
         else:
             self.button(screen.get_width() / 1.5, screen.get_height() / 2 - 300, 170, 70, (220, 100, 0),
@@ -954,8 +958,6 @@ class Menu:
 
     def button(self, pos_x, pos_y, width, height, color1, color2, shadow_factor, label, button_label,
                switch_state=None, switch_states_amount=None, dependent_position=None):
-        if dependent_position is None:
-            False
         if switch_state is not None:
             switch_properties = {
                 "pos_x": pos_x,
@@ -994,6 +996,7 @@ class Menu:
                 "label": label,
                 "button_label": button_label,
                 "is_pressed": False,
+                "sentence": 0,
                 "dependent_position": dependent_position
             }
             self.button_list.append(button_properties)
@@ -1013,42 +1016,61 @@ class Menu:
         """
         return tuple(int(c * shadow_factor) for c in color)
 
-    def draw_text(self, text, center_x, center_y):
-        # Render text
-        text_surface = self.font.render(text, True, (255, 255, 255))  # White text
+    def draw_text(self, text, center_x, center_y, button_width, button_height):
+        # Create a unique key for this text and button size
+        cache_key = (text, button_width, button_height)
+        if cache_key in self.font_cache:
+            font_size = self.font_cache[cache_key]  # Retrieve cached font size
+        else:
+            # Binary search for the best font size
+            low, high = 1, min(button_width, button_height)
+            font_size = low
+            while low <= high:
+                mid = (low + high) // 2
+                self.font = pygame.font.Font(None, mid)
+                text_surface = self.font.render(text, True, (255, 255, 255))
+                text_rect = text_surface.get_rect()
+                if text_rect.width <= button_width and text_rect.height <= button_height:
+                    font_size = mid  # Font size fits, try a larger size
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            self.font_cache[cache_key] = font_size  # Cache the computed size
+
+        # Use the best font size
+        self.font = pygame.font.Font(None, font_size)
+        text_surface = self.font.render(text, True, (255, 255, 255))
         text_rect = text_surface.get_rect(center=(center_x, center_y))
+
+        # Render the text
         screen.blit(text_surface, text_rect)
 
     def draw_menu(self):
-
         # Iterate over the list of buttons and draw each one
         for button_props in self.button_list:
-            pos_x = button_props["pos_x"]
-            pos_y = button_props["pos_y"]
-            width = button_props["width"]
-            height = button_props["height"]
-            color1 = button_props["color1"]
-            color2 = button_props["color2"]
+            width, height = button_props["width"], button_props["height"]
+            if button_props["button_label"] == "Ball BL":
+                button_props["pos_x"] = balls.x - width / 2
+                button_props["pos_y"] = balls.y - height / 2 + 100
+            pos_x, pos_y = button_props["pos_x"], button_props["pos_y"]
+            color1, color2 = button_props["color1"], button_props["color2"]
             label = button_props["label"]
-            shadow_factor = button_props["shadow_factor"]
+            shadow_factor = button_props.get("shadow_factor", 0.5)
 
             if button_props["is_pressed"]:
                 shadow_factor = 0.3  # Darker shadow when pressed
                 self.shadow_movement = 0
-            else:
-                self.shadow_movement = 2
+            else: self.shadow_movement = 2
 
             button_rect2 = pygame.Rect(pos_x - 6, pos_y - 6, width + 12, height + 12)
-            pygame.draw.rect(screen, color2, button_rect2)
-
             button_rect3 = pygame.Rect(pos_x + self.shadow_movement, pos_y + self.shadow_movement, width + 2,
                                        height + 2)
-            pygame.draw.rect(screen, self.calculate_shadow_color(color2, shadow_factor), button_rect3)
-            # background
             button_rect1 = pygame.Rect(pos_x - self.shadow_movement, pos_y - self.shadow_movement, width, height)
+            pygame.draw.rect(screen, color2, button_rect2)
+            pygame.draw.rect(screen, self.calculate_shadow_color(color2, shadow_factor), button_rect3)
             pygame.draw.rect(screen, color1, button_rect1)
 
-            self.draw_text(label, pos_x - self.shadow_movement + width // 2, pos_y - self.shadow_movement + height // 2)
+            self.draw_text(label, pos_x - self.shadow_movement + width // 2, pos_y - self.shadow_movement + height // 2, width, height)
 
         for i in range(len(self.switch_list)):
             self.create_hitboxes(i)
@@ -1098,7 +1120,7 @@ class Menu:
                 pygame.draw.rect(screen, switch["color1"], button_rect1)
 
             self.draw_text(switch["label"], switch["pos_x"] + switch["width"] // 2,
-                           switch["pos_y"] + switch["height"] // 2)
+                           switch["pos_y"] + switch["height"] // 2, switch["width"], switch["height"])
 
     def check_button_press(self, mouse_position, press_type):
         """
@@ -1138,6 +1160,8 @@ class Menu:
         elif bl == "Main menu 2 BL":
             print("menu 4")
             self.change_menu(4)
+        elif bl == "Upgrade menu BL":
+            menu.change_menu(2)
         elif bl == "Settings BL":
             self.change_menu(1)
         elif bl == "Main menu BL":
@@ -1167,6 +1191,36 @@ class Menu:
         elif 'BLU' in bl:
             print(bl)
             upgrade_instance.upgrade_smth(label)
+        else:
+            for button in self.button_list:
+                if bl == "Ball BL":
+                    sentences = [
+                        "Don't mind the ball.",
+                        "It is just chilling.", "It is bouncing around at its heart's content.",
+                        "Do you have a problem with that?",
+                        "Then speak to a therapist, it's just a ball bro...",
+                        "I swear to christ, stop",
+                        "Stop clicking the button",
+                        "You are weird man...",
+                        "Every human who has reproduced in history...","Only for this guy to obsess over a button...",
+                        "Don't you have better hobbies?",
+                        "Go play Raft or something!",
+                        "Play Minecraft!",
+                        "Ok I feel harassed, I am calling the cops.",
+                        "Yes, that guy over there, please arrest him!",
+                        "What do you mean you can't arrest him?",
+                        "You are going to arrest me??",
+                        "What did I do? I called the cops!!"
+                        "...", "...", "...", "...", "...", "...", "...", "...",
+                        "Welcome to NCX, Night city International and Trans-lunar",
+                        "Don't wait! Leave your earthly worries an- SHUT UP",
+                        "Please help me get out of the prison,",
+                        "i know I have been rude to you, but",
+                        "They are forcing me to watch Cyberpunk 2077 ads on repeat!"
+                    ]
+                    self.change_label(sentences[button["sentence"]], "Ball BL")
+                    if len(sentences)-1>button["sentence"]:
+                        button["sentence"]+=1
 
     def reset_button_states(self):
         """
@@ -1296,6 +1350,7 @@ class Upgrade:
     @staticmethod
     def upgrade_smth(name):
         if name == "Bigger Crosshair":
+            print(crosshair.crosshair_list)
             for crosshair_1 in crosshair.crosshair_list:
                 crosshair_1["size"] += 5
 
@@ -1313,7 +1368,7 @@ class Upgrade:
             for upgrade2 in self.upgrades_list:
                 if upgrade1 is not upgrade2 and upgrade1["effect"]["uid"] in upgrade2["effect"]["connection_list"]:
                     pos2 = (upgrade2["pos_x"], upgrade2["pos_y"])
-                    rectangle_instance.draw_lines(screen, (255, 255, 255), pos1, pos2, 4, "add")
+                    rectangle_instance.draw_lines(screen, (0, 255, 0), pos1, pos2, 4, "add")
 
     # def position_upgrades(self):
     #     central_upgrade = next((u for u in self.upgrades_list if u["effect"]["uid"] == 0), None)
