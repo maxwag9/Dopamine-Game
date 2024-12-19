@@ -1,3 +1,4 @@
+import ctypes
 import math
 import os
 import random
@@ -5,11 +6,15 @@ import xml.etree.ElementTree as ET
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
 from xml.dom import minidom
-
 import pygame
 
 pygame.init()
-screen = pygame.display.set_mode((2560, 1100), pygame.HWSURFACE | pygame.DOUBLEBUF)
+info = pygame.display.Info()
+tv_width, tv_height = info.current_w, info.current_h
+screen = pygame.display.set_mode((tv_width, tv_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
+sdl = ctypes.CDLL("SDL2.dll")
+hwnd = pygame.display.get_wm_info()['window']
+user32 = ctypes.windll.user32
 screen_width = screen.get_width()
 screen_height = screen.get_height()
 clock = pygame.time.Clock()
@@ -28,6 +33,27 @@ fps_interval = 1000 / fps  # Milliseconds per frame
 last_tick = pygame.time.get_ticks()
 last_frame = pygame.time.get_ticks()
 bg_color = (0, 0, 0)
+
+def null_window_position(x=0, y=0):
+    user32.MoveWindow(hwnd, x, y, tv_width, tv_height, True)
+
+def switch_to_borderless():
+    global screen
+    screen = pygame.display.set_mode((tv_width, tv_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
+    user32.ShowWindow(hwnd, 1)  # Show window normally (not minimized)
+    null_window_position()  # Reset the position after making it borderless
+
+# Function to switch to windowed mode
+def switch_to_windowed():
+    global screen
+    screen = pygame.display.set_mode((tv_width, tv_height), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
+    null_window_position(0, 1)
+    user32.ShowWindow(hwnd, 3)  # Maximize the window when switching
+
+# Function to switch to fullscreen mode
+def switch_to_fullscreen():
+    global screen
+    screen = pygame.display.set_mode((tv_width, tv_height), pygame.FULLSCREEN | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
 
 def select_texture_and_scale():
@@ -936,6 +962,8 @@ class Menu:
             """Graphics"""
             self.button(screen.get_width() / 2 - 150, screen.get_height() / 2 - 300, 300, 50, (220, 10, 0),
                         (220, 100, 80), 0.5, "Switch Debug Mode", "debug option BL", debug_mode, 3)
+            self.button(screen.get_width() / 2 - 150, screen.get_height() / 2 - 100, 300, 50, (220, 10, 0),
+                        (220, 100, 80), 0.5, "Switch Screen Mode", "screen option BL", screen, 3)
             self.button(screen.get_width() / 2 - 150, screen.get_height() / 2 - 200, 300, 50, (220, 10, 0),
                         (220, 100, 80), 0.5, "Set enemy texture", "enemy texture BL")
             self.button(screen.get_width() / 10, screen.get_height() / 2 - 300, 140, 100, (220, 10, 0), (220, 100, 80),
@@ -967,6 +995,7 @@ class Menu:
                 "hitbox_height": 10,
                 "hitbox_width": 10,
                 "slider_position": [pos_x, pos_y, 0],
+                "slider_size": [10, 10],
                 "color1": color1,
                 "color2": color2,
                 "shadow_factor": shadow_factor,
@@ -1088,32 +1117,32 @@ class Menu:
 
             # Background of the slider
             if switch["width"] > switch["height"]:
-                slider_width, slider_height = switch["width"] / 10, switch["height"] + 12
-                button_rect1 = pygame.Rect(switch["slider_position"][0] - self.shadow_movement - slider_width / 2,
-                                           switch["slider_position"][1] - self.shadow_movement, slider_width,
-                                           slider_height)
-                button_rect2 = pygame.Rect(switch["slider_position"][0] - 2 - slider_width / 2,
+                switch["slider_size"][0], switch["slider_size"][1] = switch["width"] / 10, switch["height"] + 12
+                button_rect1 = pygame.Rect(switch["slider_position"][0] - self.shadow_movement - switch["slider_size"][0] / 2,
+                                           switch["slider_position"][1] - self.shadow_movement, switch["slider_size"][0],
+                                           switch["slider_size"][1])
+                button_rect2 = pygame.Rect(switch["slider_position"][0] - 2 - switch["slider_size"][0] / 2,
                                            switch["slider_position"][1] - 2,
-                                           slider_width + 4, slider_height + 4)
-                button_rect3 = pygame.Rect(switch["slider_position"][0] + self.shadow_movement - slider_width / 2,
-                                           switch["slider_position"][1] + self.shadow_movement, slider_width + 2,
-                                           slider_height + 2)
+                                           switch["slider_size"][0] + 4, switch["slider_size"][1] + 4)
+                button_rect3 = pygame.Rect(switch["slider_position"][0] + self.shadow_movement - switch["slider_size"][0] / 2,
+                                           switch["slider_position"][1] + self.shadow_movement, switch["slider_size"][0] + 2,
+                                           switch["slider_size"][1] + 2)
                 pygame.draw.rect(screen, switch["color2"], button_rect2)
                 pygame.draw.rect(screen, self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]),
                                  button_rect3)
                 pygame.draw.rect(screen, switch["color1"], button_rect1)
             else:
-                slider_width, slider_height = switch["width"] + 12, switch["height"] / 10
+                switch["slider_size"][0], switch["slider_size"][1] = switch["width"] + 12, switch["height"] / 10
                 button_rect1 = pygame.Rect(switch["slider_position"][0] - self.shadow_movement,
-                                           switch["slider_position"][1] - self.shadow_movement - slider_height / 2,
-                                           slider_width, slider_height)
+                                           switch["slider_position"][1] - self.shadow_movement - switch["slider_size"][1] / 2,
+                                           switch["slider_size"][0], switch["slider_size"][1])
                 button_rect2 = pygame.Rect(switch["slider_position"][0] - 2,
-                                           switch["slider_position"][1] - 2 - slider_height / 2,
-                                           slider_width + 4, slider_height + 4)
+                                           switch["slider_position"][1] - 2 - switch["slider_size"][1] / 2,
+                                           switch["slider_size"][0] + 4, switch["slider_size"][1] + 4)
                 button_rect3 = pygame.Rect(switch["slider_position"][0] + self.shadow_movement,
-                                           switch["slider_position"][1] - slider_height / 2 + self.shadow_movement,
-                                           slider_width + 2,
-                                           slider_height + 2)
+                                           switch["slider_position"][1] - switch["slider_size"][1] / 2 + self.shadow_movement,
+                                           switch["slider_size"][0] + 2,
+                                           switch["slider_size"][1] + 2)
                 pygame.draw.rect(screen, switch["color2"], button_rect2)
                 pygame.draw.rect(screen, self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]),
                                  button_rect3)
@@ -1188,6 +1217,23 @@ class Menu:
                 if switch["button_label"] == bl:
                     switch["switch_state"] = switch_option
             print("Debug mode is: " + str(debug_mode))
+        elif bl == "screen option BL":
+            global screen
+            options=[
+                "Borderless Window",
+                "Window",
+                "Fullscreen"
+            ]
+            if options[switch_option] == "Borderless Window":
+                switch_to_borderless()
+            elif options[switch_option] == "Window":
+                switch_to_windowed()
+            elif options[switch_option] == "Fullscreen":
+                switch_to_fullscreen()
+
+            for switch in self.switch_list:
+                if switch["button_label"] == bl:
+                    switch["switch_state"] = switch_option
         elif 'BLU' in bl:
             print(bl)
             upgrade_instance.upgrade_smth(label)
@@ -1254,59 +1300,69 @@ class Menu:
                             "hitbox_height"] / 2 - switch["height"] / 20
 
     def move_switch(self):
-        for switch in self.switch_list:
+        animation_speed = 8
+        for i in range(len(self.switch_list)):
+            switch = self.switch_list[i]
             # If animation isn't marked as "moved", continue moving
             if not switch["moved"]:
                 if switch["is_pressed"]:
-                    print("reseted")
-                    switch["slider_position"][2] = 0
+                    switch["slider_position"][2] = 0  # Reset animation progress
                     # Reset animation for new state
                     switch["previous_switch_position"] = list(switch["slider_position"][:2])
                     switch["target_switch_position"] = list(switch["switch_positions"][switch["switch_state"]][:2])
                     continue  # Restart loop with updated target position
+
                 # Ensure initial positions are set
                 target_position_buffer = switch["switch_positions"][switch["switch_state"]]
-                switch["target_switch_position"] = [target_position_buffer[0] + target_position_buffer[2] / 2,
-                                                    target_position_buffer[1] + target_position_buffer[3] / 2]
+                switch["target_switch_position"] = [
+                    target_position_buffer[0] + target_position_buffer[2] / 2,
+                    target_position_buffer[1] + target_position_buffer[3] / 2
+                ]
+
                 if switch["previous_switch_position"] is None:
-                    switch["previous_switch_position"] = switch["switch_positions"][switch["previous_switch_state"]]
+                    switch["previous_switch_position"] = list(switch["slider_position"][:2])
+
                 # Animate slider movement
                 if switch["slider_position"][2] < 360:
-                    #print(switch["slider_position"][2])
-                    switch["slider_position"][2] += 4  # Increase angle for smooth movement
+                    # Calculate smooth movement using sinusoidal interpolation
                     progress = switch["slider_position"][2] / 360
-                    smooth_value = (math.sin(progress * 2 * math.pi - math.pi / 2) + 1) / 2
-                    delta_x = switch["target_switch_position"][0] - switch["previous_switch_position"][0]
-                    delta_y = switch["target_switch_position"][1] - switch["previous_switch_position"][1]
+                    smooth_value = (math.sin(progress * 2 * math.pi - math.pi / 2) + 1)
+                    if switch["height"] < switch["width"]:
+                        delta_x = switch["target_switch_position"][0] - switch["previous_switch_position"][0]
+                        delta_y = 0
+                    else:
+                        delta_x = 0
+                        delta_y = switch["target_switch_position"][1] - switch["previous_switch_position"][1]
 
-                    movement_factor = [
-                        delta_x/360 * smooth_value,
-                        delta_y/360 * smooth_value
-                    ]
-                        
+                    # Movement factor is the delta scaled by the smooth value
+                    movement_factor_x = delta_x / 360 * smooth_value * animation_speed
+                    movement_factor_y = delta_y / 360 * smooth_value * animation_speed
+
+                    # Update slider position smoothly
+                    switch["slider_position"][0] += movement_factor_x
+                    switch["slider_position"][1] += movement_factor_y
+                    switch["slider_position"][2] += animation_speed  # Increment the progress of the animation
+
                     #if debug_mode == 1:
                     pygame.draw.rect(screen, (0, 0, 255), (
                         switch["target_switch_position"][0], switch["target_switch_position"][1], 12, 120))
                     pygame.draw.rect(screen, (0, 255, 0), (
                         switch["previous_switch_position"][0], switch["previous_switch_position"][1], 12, 120))
-                    if movement_factor[0] < 0 or movement_factor[1] < 0:
-                        pygame.draw.rect(screen, (255, 0, 0), (
+                    if movement_factor_x < 0 or movement_factor_y < 0:
+                        pygame.draw.rect(screen, (255, 255, 0), (
                             switch["target_switch_position"][0], switch["slider_position"][1] + 64,
-                            abs(movement_factor[0]) + 12, 12))
+                            abs(delta_x), 12))
                     else:
-                        pygame.draw.rect(screen, (255, 0, 0), (
+                        pygame.draw.rect(screen, (255, 255, 0), (
                             switch["previous_switch_position"][0], switch["slider_position"][1] + 64,
-                            abs(movement_factor[0]) + 12, 12))
+                            abs(delta_x), 12))
 
-                    switch["slider_position"][0] += movement_factor[0]
-                    switch["slider_position"][1] += movement_factor[1]
                 else:
-                    print("DONE!!: " + str(switch["slider_position"][2]))
                     # Animation complete
-                    switch["slider_position"][2] = 0
-                    switch["moved"] = True
+                    switch["slider_position"][2] = 0  # Reset animation progress
+                    switch["moved"] = True  # Mark as moved
                     # Update previous state
-                    switch["previous_switch_state"] = switch["switch_state"]
+                    #switch["previous_switch_state"] = switch["switch_state"]
                     switch["previous_switch_position"] = switch["target_switch_position"]
 
 
@@ -1489,7 +1545,6 @@ while True:
                     mouse_button_held[3] = True
                     enemies.create_enemy(mouse_pos[0], mouse_pos[1], 60, 2, (255, 0, 0), 1, 3, 100, 100, None, None,
                                          False, None)
-
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:  # Left mouse button
                     mouse_button_held[1] = False
@@ -1497,7 +1552,9 @@ while True:
                     mouse_button_held[3] = False
                 menu.check_button_press(mouse_pos, "logical")
                 menu.reset_button_states()  # Reset all button states when mouse is released
-
+            if event.type == pygame.VIDEORESIZE:
+                screen_width = screen.get_width()
+                screen_height = screen.get_height()
         if mouse_button_held[1]:
             crosshair.shoot()
 
