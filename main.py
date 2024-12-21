@@ -40,7 +40,7 @@ def null_window_position(x=0, y=0):
 def switch_to_borderless():
     global screen
     screen = pygame.display.set_mode((tv_width, tv_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
-    #user32.ShowWindow(hwnd, 1)  # Show window normally (not minimized)
+    user32.ShowWindow(hwnd, 1)  # Show window normally (not minimized)
     null_window_position()  # Reset the position after making it borderless
 
 # Function to switch to windowed mode
@@ -686,7 +686,7 @@ class Enemy:
             if abs(red_nemesis["pos_x"]) > screen_width * 2 or abs(red_nemesis["pos_y"]) > screen_height * 2:
                 self.red_nemesis_list.pop(i)
                 print("Enemy 'optimized', Enemy amount: " + str(len(self.red_nemesis_list)))
-            if len(self.red_nemesis_list) < 70:
+            if len(self.red_nemesis_list) < 700:
                 self.wave()
 
     def choose_random_props(self):
