@@ -151,7 +151,7 @@ def draw_enemy_debug_info():
         # Draw the square's collision boundaries
         pygame.draw.polygon(screen, (0, 255, 0), enemy["vertices"], 1)
 
-def ball_hits_enemy(arbiter):
+def ball_hits_enemy(arbiter, shape, data):
     # Get the shapes involved in the collision
     ball_shape, enemy_shape = arbiter.shapes
 

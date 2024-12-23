@@ -4,7 +4,7 @@ Dopamine Game is a game about games. Pretty random and chaotic, tough with a cle
 Installation: 
 
 Python (in my case 3.12)
-Modules: Pygame, os, math, random, xml.etree.ElementTree, tkinter, xml.dom  Further details at the start of main.py!
+Modules: Pygame, Pymunk, os, math, random, xml.etree.ElementTree, tkinter, xml.dom  Further details at the start of main.py!
 
 Icon:
 ![game](https://github.com/user-attachments/assets/76974218-05d4-497c-aba2-89b49e64f806)
