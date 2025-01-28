@@ -57,6 +57,7 @@ frame_time = 0.05
 frame_start_time = time.perf_counter()
 smoothed_fps = 240
 smoothed_lrps = smoothed_fps
+frame_counter = 0
 bg_color = (8, 0, 0)
 
 
@@ -91,11 +92,18 @@ def damage_enemy(red_nemesis, damage=1, cross_shoot=None):
     red_nemesis["is_attacked"] = True
     if cross_shoot is not None:
         red_nemesis["hp"] -= cross_shoot["damage"]
+        if red_nemesis["hp"] < 0:
+            red_nemesis["lost_hp"] = cross_shoot["damage"] + red_nemesis["hp"]
+        else:
+            red_nemesis["lost_hp"] = cross_shoot["damage"]
         cross_shoot["enemy_hit"] = True
         cross_shoot["last_shot_time"] = pygame.time.get_ticks()  # Store the shot time
     else:
         red_nemesis["hp"] -= damage
-
+        if red_nemesis["hp"] < 0:
+            red_nemesis["lost_hp"] = damage + red_nemesis["hp"]
+        else:
+            red_nemesis["lost_hp"] = damage
 
 def select_texture_and_scale():
     root = Tk()
@@ -781,6 +789,9 @@ class Enemy:
             "age": age,
             "hp": hp,
             "max_hp": max_hp,
+            "lost_hp": 0,
+            "prev_lost_hp": 0,
+            "animated_lost_hp": 0,
             "rotation": rotation,
             "vertices": [],
             "last_rotation": 0,
@@ -791,13 +802,14 @@ class Enemy:
             "surface": None,
             "image": None,
             "rotated_surface": pygame.Surface((40, 40), pygame.SRCALPHA),
-
+            "previous_framecount": 0
         }
 
         self.red_nemesis_list.append(enemy_properties)
         self.choose_random_props()
 
     def draw(self):
+        global debug_mode, enemy_image, enemy_image_path
         for red_nemesis in self.red_nemesis_list:
             pos_x = red_nemesis["pos_x"]
             pos_y = red_nemesis["pos_y"]
@@ -816,9 +828,47 @@ class Enemy:
             edge_color = red_nemesis["edge_color"]
             if red_nemesis["is_attacked"]:
                 hp_factor = hp / max_hp
-                pygame.draw.rect(screen, (255, 0, 0), (pos_x - size / 2, pos_y + size, size, size / 10))
-                pygame.draw.rect(screen, (0, 255, 0), (pos_x - size / 2, pos_y + size, size * hp_factor + 1, size / 10))
-            global debug_mode, enemy_image, enemy_image_path
+                pos_x_half_size = pos_x - size / 2
+                pos_y_size = pos_y + size
+                tenth_size = size * 0.1
+
+                # Draw the full HP bar (red background and green HP bar)
+                pygame.draw.rect(screen, (255, 0, 0), (pos_x_half_size, pos_y_size, size, tenth_size))
+                pygame.draw.rect(screen, (0, 255, 0), (pos_x_half_size, pos_y_size, size * hp_factor + 1, tenth_size))
+
+                if red_nemesis["lost_hp"] > 0:
+                    # Combine current and previous lost HP for seamless animation
+                    if red_nemesis["prev_lost_hp"] != red_nemesis["lost_hp"] and red_nemesis["prev_lost_hp"] != 0:
+                        # RUDELY INTERRUPTED!!! WHO DARES WAKE THE FLYING DUTCHMAN!!
+                        print("RUDELY INTERRUPTED")
+                        red_nemesis["lost_hp"] += red_nemesis["prev_lost_hp"]
+                        red_nemesis["previous_framecount"] = 0
+
+                    if red_nemesis["previous_framecount"] == 0:
+                        red_nemesis["previous_framecount"] = frame_counter
+
+                    # Calculate the total lost size
+                    lost_size = size * (red_nemesis["lost_hp"] / 100)
+                    elapsed_frames = frame_counter - red_nemesis["previous_framecount"]
+                    # Calculate the animation progress (clamped to [0, 1])
+                    animation_progress = min(elapsed_frames / 300, 1)
+                    # Update the actual lost_hp value gradually
+                    initial_lost_hp = red_nemesis["lost_hp"]
+                    red_nemesis["lost_hp"] = max(0, initial_lost_hp * (1 - animation_progress))
+                    # Calculate the size of the animated loss bar
+                    animated_size = size * (red_nemesis["lost_hp"] / 100)
+                    # Draw the animated loss bar
+                    pygame.draw.rect(screen, (200, 255, 200),
+                                     (max(pos_x_half_size, pos_x_half_size + size * hp_factor + 1), pos_y_size, animated_size, tenth_size))
+                    print(red_nemesis["lost_hp"], elapsed_frames, animation_progress)
+                    # Reset animation if finished
+                    if animation_progress >= 1:
+                        red_nemesis["previous_framecount"] = 0
+                        red_nemesis["lost_hp"] = 0
+                    else:
+                        # Store the current lost HP for the next frame
+                        red_nemesis["prev_lost_hp"] = red_nemesis["lost_hp"]
+
             if debug_mode == 1:
                 pygame.draw.polygon(screen, color, vertices, 3)
             if debug_mode == 0 or debug_mode == 3:
@@ -890,7 +940,6 @@ class Crosshair:
         if not cross_shoot["shot_allowed"]:
             elapsed_time = pygame.time.get_ticks() - cross_shoot.get("last_shot_time", 0)
             if elapsed_time >= 1 / cross_shoot["shooting_speed"] * 1000:  # Convert speed to milliseconds
-                print("shot allowed")
                 cross_shoot["shot_allowed"] = True
         for red_nemesis in enemies.red_nemesis_list:
             for cross_collision in self.crosshair_list:
@@ -1173,7 +1222,8 @@ class Menu:
         :param button_height: The height constraint for the text.
         """
         # Create a unique key for this text and button size
-        cache_key = (text, center_x, center_y, button_width, button_height)
+        cache_key = (text, round(center_x), round(center_y), round(button_width), round(button_height))
+
         if cache_key in self.font_cache:
             # Retrieve cached text surface and rect
             text_surface, text_rect = self.font_cache[cache_key]
@@ -1194,7 +1244,7 @@ class Menu:
 
             # Use the best font size to render the final surface
             text_font = pygame.font.Font(None, font_size)
-            text_surface = text_font.render(text, True, (255, 255, 255))
+            text_surface = text_font.render(text, False, (255, 255, 255)).convert()
             text_rect = text_surface.get_rect(center=(center_x, center_y))
 
             # Cache the rendered text surface and rect
@@ -1624,7 +1674,7 @@ balls = [Ball(100, 100, 15, (200, 200), (255, 255, 0))]
 enemies = Enemy()
 upgrade_instance = Upgrade()
 particles = Particle()
-crosshair.create_crosshair(0, 0, 800, 40, 50, (255, 0, 0), (0, 0))
+crosshair.create_crosshair(0, 0, 80, 40, 5, (255, 0, 0), (0, 0))
 mb_down_toggled = 0
 mouse_button_held = {1: False, 3: False}
 font = pygame.font.Font(None, 30)
@@ -1637,10 +1687,11 @@ def call_both_spaces(param):
 
 
 def main():
-    global no_sleep_frame_time, frame_time, frame_start_time, mouse_pos, smoothed_fps, paused, debug_mode, screen_width, screen_height, smoothed_lrps
+    global no_sleep_frame_time, frame_time, frame_start_time, frame_counter, mouse_pos, smoothed_fps, paused, debug_mode, screen_width, screen_height, smoothed_lrps
     running = True
     while running:
         frame_start_time = time.perf_counter()
+        frame_counter += 1
         # Update (logical) section – for TPS
         if frame_time >= target_tick_time:  # Run TPS updates
             enemies.move()
