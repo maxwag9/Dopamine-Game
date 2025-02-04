@@ -12,7 +12,7 @@ def profile_game():
     # Save profiling data
     with open("profile_results.txt", "w") as file:
         stats = pstats.Stats(profiler, stream=file)
-        stats.sort_stats("tottime")
+        stats.sort_stats("cumtime")
   # Sort by cumulative time
         stats.print_stats()
 

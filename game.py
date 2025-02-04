@@ -14,6 +14,55 @@ import pymunk.pygame_util
 from pymunk import BB
 
 pygame.init()
+pygame.joystick.init()
+
+# Check if any joysticks are connected
+if pygame.joystick.get_count() > 0:
+    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+    joystick.init()
+    print(f"Connected to: {joystick.get_name()}")
+else:
+    joystick = False
+    print("No joystick detected.")
+
+'''Controller Values'''
+DEADZONE = 0.1
+POINTER_SPEED = 15.0
+listening = False
+drift = False
+bomb_allowed = True
+last_bomb_time = 0
+bomb_throwing_speed = 1
+# controller input list: button, state, mapped action
+controller_input_button_list = [
+    ["cross", "False", None],  # Button 0
+    ["circle", "False", None],  # Button 1
+    ["square", "False", None],  # Button 2
+    ["triangle", "False", None],  # Button 3
+
+    ["share", "False", None],  # Button 4
+    ["ps_button", "False", None],  # Button 5
+    ["options", "False", None],  # Button 6
+    ["l3", "False", None],  # Button 7
+    ["r3", "False", None],  # Button 8
+    ["l1", "False", None],  # Button 9
+    ["r1", "False", None],  # Button 10
+
+    ["dpad_up", "False", None],  # Button 11
+    ["dpad_down", "False", None],  # Button 12
+    ["dpad_left", "False", None],  # Button 13
+    ["dpad_right", "False", None],  # Button 14
+    ["touchpad", "False", None],  # Button 15
+]
+controller_input_analogue_list = [
+
+    ["l_x_axis", 0.0, None],  # Axis 0
+    ["l_y_axis", 0.0, None],  # Axis 1
+    ["r_x_axis", 0.0, None],  # Axis 2
+    ["r_y_axis", 0.0, None],  # Axis 3
+    ["l2", 0.0, None],  # Axis 4
+    ["r2", 0.0, None],  # Axis 5
+]
 
 info = pygame.display.Info()
 tv_width, tv_height = info.current_w, info.current_h
@@ -26,6 +75,7 @@ no_physics_space = pymunk.Space(True)
 space.gravity = (0, 0)
 BALL_COLLISION_TYPE = 1
 ENEMY_COLLISION_TYPE = 2
+
 # Cache for rotated rectangles
 rotation_cache = {}
 paused_velocities = {}
@@ -42,7 +92,10 @@ grid = defaultdict(list)  # Grid for spatial partitioning
 reddings_amount = 0
 rand = random.Random()
 user_name = "standard"
-mouse_pos = (0, 0)
+mouse_pos = (50, 50)
+max_velocity=8
+acceleration_speed = 0.8  # Player ball acceleration
+friction = 0.98  # Friction for the perpendicular axis when changing the players' movement direction
 debug_mode = 3
 collision_mode = 0
 playing = False
@@ -58,21 +111,21 @@ frame_start_time = time.perf_counter()
 smoothed_fps = 240
 smoothed_lrps = smoothed_fps
 frame_counter = 0
+alpha = 0.0  # Interpolation factor
+accumulator = 0.0  # Stores leftover time between physics steps
 bg_color = (8, 0, 0)
 
 
 def null_window_position(x=0, y=0):
     user32.MoveWindow(hwnd, x, y, tv_width, tv_height)
 
-
 def switch_to_borderless():
     global screen
     # Do it twice because of a stupid black bar bug on the bottom...
     for _ in range(2):
         screen = pygame.display.set_mode((tv_width, tv_height), pygame.NOFRAME | pygame.HWSURFACE | pygame.DOUBLEBUF)
-        user32.ShowWindow(hwnd, 1)  # Show window normally (not minimized)
+        user32.ShowWindow(hwnd, 1)  # Show the window normally (not minimized)
         null_window_position()  # Reset the position after making it borderless
-
 
 # Function to switch to windowed mode
 def switch_to_windowed():
@@ -81,14 +134,13 @@ def switch_to_windowed():
     null_window_position(0, 1)
     user32.ShowWindow(hwnd, 3)  # Maximize the window when switching
 
-
 # Function to switch to fullscreen mode
 def switch_to_fullscreen():
     global screen
     screen = pygame.display.set_mode((tv_width, tv_height), pygame.FULLSCREEN | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
-
-def damage_enemy(red_nemesis, damage=1, cross_shoot=None):
+def damage_enemy(red_nemesis, damage=1, cross_shoot=None, ball=None):
+    global paused
     red_nemesis["is_attacked"] = True
     if cross_shoot is not None:
         red_nemesis["hp"] -= cross_shoot["damage"]
@@ -98,6 +150,17 @@ def damage_enemy(red_nemesis, damage=1, cross_shoot=None):
             red_nemesis["lost_hp"] = cross_shoot["damage"]
         cross_shoot["enemy_hit"] = True
         cross_shoot["last_shot_time"] = pygame.time.get_ticks()  # Store the shot time
+    elif ball:
+        red_nemesis["hp"] -= damage
+        if red_nemesis["hp"] < 0:
+            red_nemesis["lost_hp"] = damage + red_nemesis["hp"]
+        else:
+            red_nemesis["lost_hp"] = damage
+        ball.hp -= damage
+        if ball.hp <= 0:
+            ball.dead = True
+            paused = 0
+
     else:
         red_nemesis["hp"] -= damage
         if red_nemesis["hp"] < 0:
@@ -128,18 +191,15 @@ def select_texture_and_scale():
         print(f"Error loading texture: {e}")
         return None
 
-
 def get_biased_random_float(start, end):
     # Generate a random float between 0 and 1, then square it to bias towards lower values
     biased_random = random.random() ** 2
     result = round(start + (end - start) * biased_random, 1)
     return result
 
-
 def get_distance(pos_x_1, pos_y_1, pos_x_2, pos_y_2):
     distance = math.sqrt((pos_x_2 - pos_x_1) ** 2 + (pos_y_2 - pos_y_1) ** 2)
     return distance
-
 
 def precompute_unit_rotations():
     """
@@ -166,7 +226,6 @@ def precompute_unit_rotations():
 
         rotation_cache[degree] = rotated_corners
 
-
 def get_rotated_vertices(top_left_x, top_left_y, size, angle):
     """
     Returns the vertices of a rotated square by applying the size and top-left
@@ -181,7 +240,6 @@ def get_rotated_vertices(top_left_x, top_left_y, size, angle):
         for x, y in relative_vertices
     ]
 
-
 def check_collision(shape1, shape2):
     """
     Checks if two Pymunk shapes collide.
@@ -191,14 +249,13 @@ def check_collision(shape1, shape2):
     :return: True if the shapes collide, False otherwise.
     """
 
-    # You could add a check for bounding box intersection first, as it's cheaper than checking full collisions
+    # You could add a check for bounding box intersection first, as it's less expensive than checking full collisions
     if shape1.bb.intersects(shape2.bb):
         # Use the built-in collision query
         collision_info = shape1.shapes_collide(shape2)
         # Check if there is any collision
         return collision_info.points != []
     return False
-
 
 def check_aabb_to_point_collision(obj_shape, point, point_radius=0):
     """
@@ -219,20 +276,17 @@ def check_aabb_to_point_collision(obj_shape, point, point_radius=0):
 
     return False  # No collision
 
-
 def create_bb(position, size):
     return BB(position[0], position[1], position[0] + size[0], position[1] + size[1])
 
-
 def draw_ball_debug_info(a_ball):
-    pygame.draw.circle(screen, (255, 0, 0), (int(a_ball.x), int(a_ball.y)), a_ball.radius, 1)
-
+    pygame.draw.circle(screen, (255, 0, 0), (int(a_ball.body.position.x), int(a_ball.body.position.y)), a_ball.radius,
+                       1)
 
 def draw_enemy_debug_info():
     for enemy in enemies.red_nemesis_list:
         # Draw the square's collision boundaries
         pygame.draw.polygon(screen, (0, 255, 0), enemy["vertices"], 1)
-
 
 def ball_hits_enemy(arbiter, _shape, _data):
     # Get the shapes involved in the collision
@@ -241,9 +295,16 @@ def ball_hits_enemy(arbiter, _shape, _data):
     # Find the enemy in your list
     for enemy in enemies.red_nemesis_list:
         if enemy["shape"] == enemy_shape:
-            damage_enemy(enemy, 13)
+            damage_enemy(enemy, 13, None, balls[0])
             return True
     return False
+
+def clamp_velocity(velocity, min_value, max_value):
+    """
+    Clamps the velocity between the given min and max values.
+    This function works for floats to support subtle acceleration.
+    """
+    return max(min_value, min(max_value, velocity))
 
 
 class GameState:
@@ -352,7 +413,6 @@ class GameState:
                 crosshair.create_honeycomb_crosshairs(0, 0, ch["crosshair_size"], ch["damage"], ch["shooting_speed"],
                                                       (255, 0, 0))
 
-
 class Rectangles:
     def __init__(self):
         self.rect_list = []
@@ -387,7 +447,6 @@ class Rectangles:
     @staticmethod
     def draw_line(surface, pos1, pos2, color=(255, 255, 255), thickness=2):
         pygame.draw.line(surface, color, pos1, pos2, thickness)
-
 
 class Particle:
     def __init__(self):
@@ -518,6 +577,8 @@ class Particle:
 
                 # Render particles
                 for i in range(len(particle["particle_x"])):
+                    if i >= particle["end_index"]:  # Only process active particles
+                        break
                     if particle["generation"][i] == particle["current_gen"]:
                         size_factor = particle["size"] / (2.1 ** particle["generation"][i])
                         particle_surface = pygame.Surface((size_factor, size_factor), pygame.SRCALPHA)
@@ -581,23 +642,26 @@ class Particle:
 
                 # Scale particle if necessary
                 size = (
-                     int(particle_surface.get_width() * scaled_width*0.05), int(particle_surface.get_height()))
+                    int(particle_surface.get_width() * scaled_width * 0.05), int(particle_surface.get_height()))
                 particle_surface = pygame.transform.scale(particle_surface, size)
 
                 # Blit the particle
                 particle_rect = particle_surface.get_rect(center=(pos_x, pos_y))
                 screen.blit(particle_surface, particle_rect)
 
-
 class Ball:
     def __init__(self, x, y, radius, ball_velocity, color):
         # Create the pymunk body and shape
+        self.timer = False
         self.radius = radius
         self.color = color
         self.x = x
         self.y = y
-        self.hp = 100
-
+        self.max_hp = 150
+        self.hp = 150
+        self.attacked = False
+        self.dead = False
+        self.velocity = [0, 0]
         mass = 0.01
         inertia = pymunk.moment_for_circle(mass, 0, radius)
         self.body = pymunk.Body(mass, inertia)
@@ -611,23 +675,25 @@ class Ball:
         self.shape.collision_type = 1
 
     def move(self):
-        ball_pos = self.body.position
-        ball_vel = self.body.velocity
-        # Reflect velocity if outside the boundaries
-        if ball_pos.x < 0 or ball_pos.x > screen_width:
-            self.body.velocity = (-ball_vel.x, ball_vel.y)  # Reverse X velocity
-            self.body.position = (
-                max(0, int(min(ball_pos.x, screen_width))), ball_pos.y)  # Clamp position inside bounds
+        if not self.dead:
+            ball_pos = self.body.position
+            ball_vel = self.body.velocity
+            # Reflect velocity if outside the boundaries
+            if ball_pos.x < 0 or ball_pos.x > screen_width:
+                self.body.velocity = (-ball_vel.x, ball_vel.y)  # Reverse X velocity
+                self.body.position = (
+                    max(0, int(min(ball_pos.x, screen_width))), ball_pos.y)  # Clamp position inside bounds
 
-        if ball_pos.y < 0 or ball_pos.y > screen_height:
-            self.body.velocity = (ball_vel.x, -ball_vel.y)  # Reverse Y velocity
-            self.body.position = (
-                ball_pos.x, max(0, int(min(ball_pos.y, screen_height))))  # Clamp position inside bounds
+            if ball_pos.y < 0 or ball_pos.y > screen_height:
+                self.body.velocity = (ball_vel.x, -ball_vel.y)  # Reverse Y velocity
+                self.body.position = (
+                    ball_pos.x, max(0, int(min(ball_pos.y, screen_height))))  # Clamp position inside bounds
+        else:
+            self.body.velocity = (0, 0)
 
     def draw(self):
         # Draw the ball using pygame
         pygame.draw.circle(screen, self.color, (int(self.body.position.x), int(self.body.position.y)), self.radius)
-
 
 class Enemy:
     def __init__(self):
@@ -635,11 +701,10 @@ class Enemy:
 
     def move(self):
         global timer, collision_mode
-        max_velocity = 20
+        max_enemy_velocity = 20
         velocity_limit = 10
         screen_limit_x = screen_width * 2
         screen_limit_y = screen_height * 2
-
         for i in reversed(range(len(self.red_nemesis_list))):  # Iterate in reverse
             red_nemesis = self.red_nemesis_list[i]
             enemy_body = red_nemesis["body"]
@@ -650,19 +715,18 @@ class Enemy:
             enemy_body.position += enemy_body.velocity
             red_nemesis["pos_x"], red_nemesis["pos_y"] = enemy_body.position
 
-            if not timer:
-                red_nemesis["rotation"] += speed / 3 if red_nemesis["rotation"] > 0 else -speed / 3
-                red_nemesis["rotation"] %= 360  # Normalize rotation to [0, 360)
-                enemy_body.angle = math.radians(red_nemesis["rotation"])
-                timer = True
-            else:
-                timer = False
+            if frame_counter % 2 == 0:  # Ensures it runs every 2 frames (adjust as needed)
+                if not red_nemesis["rotation_initialized"]:
+                    enemy_body.angular_velocity = speed / 3 if red_nemesis["rotation"] > 0 else -speed / 3
+                    red_nemesis["rotation_initialized"] = True
+
+                red_nemesis["rotation"] = math.degrees(enemy_body.angle) % 360    # Store as degrees
 
             # Limit velocity
             vx, vy = enemy_body.velocity
             enemy_body.velocity = (
-                max(-velocity_limit, min(vx, velocity_limit)) if abs(vx) > max_velocity else vx,
-                max(-velocity_limit, min(vy, velocity_limit)) if abs(vy) > max_velocity else vy,
+                max(-velocity_limit, min(vx, velocity_limit)) if abs(vx) > max_enemy_velocity else vx,
+                max(-velocity_limit, min(vy, velocity_limit)) if abs(vy) > max_enemy_velocity else vy,
             )
 
             # Remove enemies outside screen bounds
@@ -683,10 +747,11 @@ class Enemy:
                 self.red_nemesis_list.pop(i)
                 continue
 
-        # Handle wave logic if enemy count drops below threshold
+        # Handle wave logic if enemy count drops below the threshold
         if 50 > len(self.red_nemesis_list) > 0:
             collision_mode = 1 - collision_mode  # Toggle collision mode
             self.wave()
+            print("CREATED ENEMIES")
 
     def choose_random_props(self):
         width = screen.get_width()
@@ -794,6 +859,7 @@ class Enemy:
             "animated_lost_hp": 0,
             "rotation": rotation,
             "vertices": [],
+            "rotation_initialized": False,
             "last_rotation": 0,
             "direction": direction,
             "is_attacked": is_attacked,
@@ -840,18 +906,15 @@ class Enemy:
                     # Combine current and previous lost HP for seamless animation
                     if red_nemesis["prev_lost_hp"] != red_nemesis["lost_hp"] and red_nemesis["prev_lost_hp"] != 0:
                         # RUDELY INTERRUPTED!!! WHO DARES WAKE THE FLYING DUTCHMAN!!
-                        print("RUDELY INTERRUPTED")
                         red_nemesis["lost_hp"] += red_nemesis["prev_lost_hp"]
                         red_nemesis["previous_framecount"] = 0
 
                     if red_nemesis["previous_framecount"] == 0:
                         red_nemesis["previous_framecount"] = frame_counter
 
-                    # Calculate the total lost size
-                    lost_size = size * (red_nemesis["lost_hp"] / 100)
                     elapsed_frames = frame_counter - red_nemesis["previous_framecount"]
                     # Calculate the animation progress (clamped to [0, 1])
-                    animation_progress = min(elapsed_frames / 300, 1)
+                    animation_progress = min(elapsed_frames / 200, 1)
                     # Update the actual lost_hp value gradually
                     initial_lost_hp = red_nemesis["lost_hp"]
                     red_nemesis["lost_hp"] = max(0, initial_lost_hp * (1 - animation_progress))
@@ -859,8 +922,8 @@ class Enemy:
                     animated_size = size * (red_nemesis["lost_hp"] / 100)
                     # Draw the animated loss bar
                     pygame.draw.rect(screen, (200, 255, 200),
-                                     (max(pos_x_half_size, pos_x_half_size + size * hp_factor + 1), pos_y_size, animated_size, tenth_size))
-                    print(red_nemesis["lost_hp"], elapsed_frames, animation_progress)
+                                     (max(pos_x_half_size, pos_x_half_size + size * hp_factor), pos_y_size,
+                                      animated_size, tenth_size))
                     # Reset animation if finished
                     if animation_progress >= 1:
                         red_nemesis["previous_framecount"] = 0
@@ -888,6 +951,85 @@ class Enemy:
                 else:
                     pygame.draw.rect(screen, (0, 25, 255), (pos_x - size / 2, pos_y - size / 2, size, size))
 
+class Bomb:
+    def __init__(self, x, y, size, bomb_velocity, color, explosion_time, primed):
+        self.explosion_time = explosion_time
+        self.primed = primed
+        self.timer = 0
+        self.animation_timer = 0
+        self.size = size
+        self.color = color
+        self.x = x
+        self.y = y
+        self.damage = 70
+        self.exploded = False
+        self.attacked = False
+        self.velocity = bomb_velocity
+        self.animation_frames = 20  # Number of frames for the expansion
+        self.max_explosion_size = max(size) * 2  # Define the max explosion radius
+        self.current_explosion_size = 0  # Start size
+        self.particles_created = False
+
+    def move(self):
+        if self.primed:
+            self.timer += 1
+        if self.timer > self.explosion_time:
+            self.exploded = True
+            if self.primed:
+                self.primed = False
+                for enemy in enemies.red_nemesis_list:
+                    if get_distance(self.x, self.y, enemy["pos_x"], enemy["pos_y"])<self.max_explosion_size:
+                        damage_enemy(enemy, self.damage)
+
+    def draw(self):
+        if self.exploded:
+            self.draw_explosion()
+            self.size = (max(0, self.size[0]-2), max(0, self.size[1]-2))
+            pygame.draw.ellipse(screen, self.color, (int(self.x), int(self.y), self.size[0], self.size[1]))
+            if not self.particles_created:
+                self.create_particles()
+                self.particles_created = True
+        else:
+            pygame.draw.ellipse(screen, self.color, (int(self.x), int(self.y), self.size[0], self.size[1]))
+
+    def draw_explosion(self):
+        if self.animation_timer < self.animation_frames:
+            # Squared expansion effect
+            expansion_factor = (self.animation_timer / self.animation_frames) ** 2
+            self.current_explosion_size = self.max_explosion_size * expansion_factor
+
+            # Alpha variation over time
+            if self.animation_timer < self.animation_frames // 2:
+                alpha = 50 + (30 * (self.animation_timer / (self.animation_frames // 2)))  # From 50 to 80
+            else:
+                alpha = max(
+                    80 - (80 * ((self.animation_timer - self.animation_frames // 2) / (self.animation_frames // 2))),
+                    0)  # Fades to 0
+
+            explosion_color = (255, 0, 0, int(alpha))  # RGBA with variable alpha
+            explosion_surface = pygame.Surface((self.current_explosion_size * 2, self.current_explosion_size * 2),
+                                               pygame.SRCALPHA)
+            pygame.draw.circle(explosion_surface, explosion_color,
+                               (self.current_explosion_size, self.current_explosion_size), self.current_explosion_size)
+
+            # Draw contour
+            pygame.draw.circle(explosion_surface, (255, 0, 0, int(alpha)),
+                               (self.current_explosion_size, self.current_explosion_size), self.current_explosion_size,
+                               3)
+
+            # Blit to screen
+            screen.blit(explosion_surface, (self.x - self.current_explosion_size+self.size[0]//2, self.y - self.current_explosion_size+self.size[1]//2))
+
+            self.animation_timer += 1
+
+    def create_particles(self):
+        num_particles = int(self.max_explosion_size / 2)  # Number of particles based on explosion size
+        for _ in range(num_particles):
+            pos_x = self.x + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
+            pos_y = self.y + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
+            size = random.uniform(5, 15)  # Randomized particle size
+            speed = random.uniform(1, 5)  # Randomized speed
+            particles.create_particle(pos_x, pos_y, size, speed, self.color, "damage", 1)
 
 class Crosshair:
     def __init__(self):
@@ -1009,7 +1151,6 @@ class Crosshair:
             # Blit the surface to the screen
             screen.blit(cross_draw["surface"], (pos_x - size, pos_y - size))
 
-
 class Menu:
     def __init__(self, init_menu_type):
         self.font_cache = {}
@@ -1021,7 +1162,7 @@ class Menu:
         self.playing = False
 
     def change_menu(self, menu_type, bl=None):
-        global user_name, debug_mode
+        global user_name, debug_mode, paused
         if rectangle_instance.line_list:
             rectangle_instance.line_list.clear()
         if self.button_list or self.switch_list:
@@ -1034,21 +1175,9 @@ class Menu:
                            "Reddings BL")
         self.create_button(0.94 * screen.get_width(), 10, 100, 40, (220, 40, 0), (220, 100, 80), 0.5, "Save",
                            "Save BL")
-        if menu_type == 0:
-            if crosshair.crosshair_list:
-                for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
-                    crosshair.crosshair_list.pop(i + 1)
-            self.create_button(50, 500, 500, 60, (0, 0, 255),
-                               (100, 100, 80), 0.5, "Ball", "Ball BL")
-            self.create_button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 300, 350, 70, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Play", "Play BL")
-            self.create_button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 200, 350, 60, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Settings", "Settings BL")
-            self.create_button(screen.get_width() / 2 - 175, 50, 350, 60, bg_color,
-                               bg_color, 0.5, "Hello there " + str(user_name) + "!", "Username BL")
-            print('Main menu opened')
 
-        elif menu_type == 1:
+        if menu_type == 1:
+            # Settings menu
             self.create_button(screen.get_width() / 10, screen.get_height() / 2 - 300, 140, 100, (220, 10, 0),
                                (220, 100, 80),
                                0.5, "Main menu", "Main menu BL")
@@ -1057,14 +1186,17 @@ class Menu:
             self.create_button(screen.get_width() / 2 - 150, screen.get_height() / 2 - 200, 300, 50, (220, 10, 0),
                                (220, 100, 80), 0.5, "Audio", "Audio option BL")
             self.create_button(screen.get_width() / 2 - 150, screen.get_height() / 2 - 100, 300, 50, (220, 10, 0),
+                               (220, 100, 80), 0.5, "Controls", "Control option BL")
+            self.create_button(screen.get_width() / 2 - 150, screen.get_height() / 2, 300, 50, (220, 10, 0),
                                (220, 100, 80), 0.5, "Miscellaneous", "Misc option BL")
             print('Settings menu opened')
 
         elif menu_type == 2:
+            # Upgrade menu
             upgrade_instance.draw_upgrades()
 
         elif menu_type == 3:
-            """Graphics"""
+            """Graphics menu"""
             self.create_switch(screen.get_width() / 2 - 150, screen.get_height() / 2 - 300, 300, 50, (220, 10, 0),
                                (220, 100, 80), 0.5, "Switch Debug Mode", "debug option BL", debug_mode, 4)
             self.create_switch(screen.get_width() / 2 - 150, screen.get_height() / 2 - 100, 300, 50, (220, 10, 0),
@@ -1076,24 +1208,121 @@ class Menu:
                                0.5, "Settings", "Settings BL")
             print("transforming image to scale: " + str(enemy_image_path))
         elif menu_type == 4:
+            '''In-Game main menu'''
             self.create_button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 300, 350, 60, (220, 10, 0),
                                (220, 100, 80), 0.5, "Settings", "Settings BL")
         elif menu_type == 5:
-            """Miscellaneous"""
+            """Miscellaneous menu"""
             self.create_switch(screen.get_width() / 2 - 150, screen.get_height() / 2 - 300, 300, 50, (220, 10, 0),
                                (220, 100, 80), 0.5, "Collision Mode", "collision mode BL", collision_mode, 2)
             self.create_button(screen.get_width() / 10, screen.get_height() / 2 - 300, 140, 100, (220, 10, 0),
                                (220, 100, 80),
                                0.5, "Settings", "Settings BL")
-        if menu_type == 99:
+        elif menu_type == 6:
+            # Button sizes based on screen dimensions
+            button_width = screen_width / 8
+            button_height = screen_height / 10
+            button_positions = [
+                # 'Cross', 'Circle', 'Square', 'Triangle'
+                (screen_width / 5+ button_width, screen_height / 6),  # Cross (X)
+                (screen_width / 5+ button_width, screen_height / 6 + button_height),  # Circle (O)
+                (screen_width / 5+ button_width, screen_height / 6 + 2 * button_height),  # Square ([])
+                (screen_width / 5+ button_width, screen_height / 6 + 3 * button_height),  # Triangle (^)
+
+                # Triggers (L2, R2)
+                (screen_width * 4 / 5, screen_height / 4),  # L2
+                (screen_width * 4 / 5, screen_height / 4 + button_height),  # R2
+
+                # D-Pad (Up, Down, Left, Right)
+                (screen_width / 2, screen_height / 6),  # D-Pad Up
+                (screen_width / 2, screen_height / 6 + button_height),  # D-Pad Down
+                (screen_width / 2, screen_height / 6 + 2 * button_height),  # D-Pad Left
+                (screen_width / 2, screen_height / 6 + 3 * button_height),  # D-Pad Right
+
+                # Stick Axes (Left Stick X, Left Stick Y, Right Stick X, Right Stick Y)
+                (screen_width / 10, screen_height / 6),  # Left Stick X
+                (screen_width / 10, screen_height / 6 + button_height),  # Left Stick Y
+                (screen_width / 10, screen_height / 6 + 2 * button_height),  # Right Stick X
+                (screen_width / 10, screen_height / 6 + 3 * button_height)  # Right Stick Y
+            ]
+
+            # Create PS4 controller buttons
+            self.create_button(0.90 * screen.get_width(), 10, 140, 40, (220, 40, 0), (220, 100, 80), 0.5, "Save Controls",
+                               "Save Controls BL")
+            # Create PS4 controller buttons using button_positions
+            self.create_button(button_positions[0][0], button_positions[0][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Faster", "Faster", "Button_map BL")
+            self.create_button(button_positions[1][0], button_positions[1][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Shoot", "Shoot", "Button_map BL")
+            self.create_button(button_positions[2][0], button_positions[2][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Exit", "Exit", "Button_map BL")
+            self.create_button(button_positions[3][0], button_positions[3][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Upgrades", "Upgrades", "Button_map BL")
+
+            self.create_button(button_positions[4][0], button_positions[4][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Charge", "Charge", "Button_map BL")
+            self.create_button(button_positions[5][0], button_positions[5][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Menu", "Menu", "Button_map BL")
+
+            self.create_button(button_positions[6][0], button_positions[6][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "'Up' D-pad", "Up", "Button_map BL")
+            self.create_button(button_positions[7][0], button_positions[7][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "'Down' D-pad", "Down", "Button_map BL")
+            self.create_button(button_positions[8][0], button_positions[8][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "'Left' D-pad", "Left", "Button_map BL")
+            self.create_button(button_positions[9][0], button_positions[9][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "'Right' D-pad", "Right", "Button_map BL")
+
+            self.create_button(button_positions[10][0], button_positions[10][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Bomb", "Bomb", "Button_map BL")
+            self.create_button(button_positions[11][0], button_positions[11][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Settings button", "Options", "Button_map BL")
+            self.create_button(button_positions[12][0], button_positions[12][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "Drift", "Drift", "Button_map BL")
+            self.create_button(button_positions[13][0], button_positions[13][1], button_width, button_height,
+                               (220, 10, 0),
+                               (220, 100, 80), 0.5, "'Touchpad' button", "Touchpad", "Button_map BL")
+
+        if menu_type == 0:
+            # Normal main menu
+            if crosshair.crosshair_list:
+                for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
+                    crosshair.crosshair_list.pop(i + 1)
+            self.create_button(50, 500, 500, 60, (0, 0, 255),
+                               (100, 100, 80), 0.5, "Ball", "Ball BL")
+            self.create_button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 300, 350, 70, (220, 10, 0),
+                               (220, 100, 80), 0.5, "Play", "Play BL")
+            self.create_button(screen.get_width() / 2 - 175, screen.get_height() / 2 - 200, 350, 60, (220, 10, 0),
+                               (220, 100, 80), 0.5, "Settings", "Settings BL")
+            self.create_button(screen.get_width() / 2 - 175, 50, 350, 60, bg_color,
+                               bg_color, 0.5, "Hello there " + str(user_name) + "!", "Username BL")
+            paused = 0
+            print('Main menu opened')
+        elif menu_type == 99:
+            '''In-Game GUI'''
             self.create_button(screen.get_width() / 7, 10, 100, 40, (220, 10, 0), (220, 100, 80),
                                0.5, "Main menu", "Main menu 2 BL")
             self.create_button(screen.get_width() / 5, 10, 100, 40, (220, 10, 0), (220, 100, 80),
                                0.5, "Upgrades", "Upgrade menu BL")
+            paused = 2
             if bl != "Back to the game BL":
                 game_state.apply_load_ingame()
                 enemies.wave()
         else:
+            '''If the menu_type is not the In-Game GUI or Main menu, then create 'Back to the game' button'''
             self.create_button(screen.get_width() / 1.5, screen.get_height() / 2 - 300, 170, 70, (220, 100, 0),
                                (160, 100, 80), 0.5, "Back to the game", "Back to the game BL")
 
@@ -1232,7 +1461,7 @@ class Menu:
             low, high = 1, min(button_width, button_height)
             font_size = low
             while low <= high:
-                mid = (low + high) // 2
+                mid = int((low + high) // 2)
                 text_font = pygame.font.Font(None, mid)
                 text_surface = text_font.render(text, False, (255, 255, 255))
                 text_rect = text_surface.get_rect()
@@ -1346,17 +1575,19 @@ class Menu:
             self.draw_text(switch["label"], switch["pos_x"] + switch["width"] // 2,
                            switch["pos_y"] + switch["height"] // 2, switch["width"], switch["height"])
 
+        self.draw_health_bars()
+
     def check_button_press(self, mouse_position, press_type):
         """
         Check if any button is clicked and return True if one is pressed.
         """
 
         for button_props in self.button_list:
-            if check_aabb_to_point_collision(button_props["shape"], pygame.mouse.get_pos()):
+            if check_aabb_to_point_collision(button_props["shape"], mouse_position):
                 if press_type == "visual":
                     button_props["is_pressed"] = True
                 else:
-                    self.button_assigner(button_props["label"], button_props["button_label"])
+                    self.button_assigner(button_props["label"], button_props["button_label"], button_props["dependent_position"])
 
         # Check switches - updated to use spatial partitioning
         for switch in self.switch_list:
@@ -1378,6 +1609,7 @@ class Menu:
                         self.button_assigner(switch["label"], switch["button_label"], switch["switch_state"])
 
     def button_assigner(self, label, bl, switch_option=0):
+        global listening
         if bl == "Back to the game BL":
             self.change_menu(99, bl)
         elif bl == "Main menu 2 BL":
@@ -1397,8 +1629,12 @@ class Menu:
             self.playing = True
         elif bl == "Save BL":
             game_state.save()
+        elif bl == "Save Controls BL":
+            controls.save()
         elif bl == "Graphics option BL":
             self.change_menu(3)
+        elif bl == "Control option BL":
+            self.change_menu(6)
         elif bl == "Misc option BL":
             self.change_menu(5)
         elif bl == "enemy texture BL":
@@ -1449,7 +1685,7 @@ class Menu:
                         "What do you mean you can't arrest him?",
                         "You are going to arrest me??",
                         "What did I do? I called the cops!!"
-                        "...", "...", "...", "...", "...", "...", "...", "...",
+                        "...", "...", "...", "...", "Fun fact: This ball is supposed to represent your testicle!", "...", "...", "...", "...",
                         "Welcome to NCX, Night city International and Trans-lunar",
                         "Don't wait! Leave your earthly worries an- SHUT UP",
                         "Please help me get out of the prison,",
@@ -1459,6 +1695,10 @@ class Menu:
                     self.change_label(sentences[button["sentence"]], "Ball BL")
                     if len(sentences) - 1 > button["sentence"]:
                         button["sentence"] += 1
+                elif switch_option == "Button_map BL":
+                    self.change_label("Listening...", bl)
+                    listening = bl
+
 
     def reset_button_states(self):
         """
@@ -1497,7 +1737,7 @@ class Menu:
             switch = self.switch_list[i]
             # If animation isn't marked as "moved", continue moving
             if not switch["moved"]:
-                # if switch is pressed statement is only for interrupted sequence during animation
+                # if switch is pressed, statement is only for interrupted sequence during animation
                 if switch["is_pressed"]:
                     switch["slider_position"][2] = 0  # Reset animation progress
                     # Reset animation for new state
@@ -1558,6 +1798,209 @@ class Menu:
                     #switch["previous_switch_state"] = switch["switch_state"]
                     switch["previous_switch_position"] = switch["target_switch_position"]
 
+    def draw_health_bars(self):
+        player = balls[0]  # 'balls' contains multiple objects, the first one is the player
+
+        if not player.attacked:
+            health_ratio = player.hp / player.max_hp  # Store health ratio instead of dividing multiple times.
+
+            bar_x = 10
+            bar_y = screen_height * 0.975
+            bar_width = screen_width * 0.1  # 10% of screen width
+            bar_height = screen_height * 0.02
+            bar_border = 1  # Border thickness
+
+            # Draw background bar (red)
+            pygame.draw.rect(screen, (255, 0, 0), (bar_x, bar_y, bar_width, bar_height))
+            # Draw foreground health bar (green)
+            pygame.draw.rect(screen, (0, 255, 0), (bar_x, bar_y, bar_width * health_ratio + 1, bar_height))
+            # Draw border around the health bar (white)
+            pygame.draw.rect(screen, (255, 255, 255), (bar_x, bar_y, bar_width + bar_border, bar_height + bar_border),
+                             bar_border)
+
+            # Handle dead state
+            if player.dead:
+                if player.timer:
+                    text_x = int(bar_x + bar_width / 2)
+                    text_y = int(bar_y + bar_height - 10)
+                    text_size = int(screen_width / 5)
+                    text_height = int(bar_height * 3)
+
+                    self.draw_text("Dead!", text_x, text_y, text_size, text_height)
+
+                if frame_counter % 60 == 0:
+                    player.timer = not player.timer
+
+class Controls:
+    def __init__(self):
+        self.controls_file = 'controls.xml'
+        self.load()
+
+    @staticmethod
+    def set_controller_button():
+        global listening
+        action = listening
+        button = None
+        if joystick is not None:
+            for event in pygame.event.get():
+                if event.type == pygame.JOYBUTTONUP:
+                    print(f"Button {event.button} set")
+                    button = event.button
+                    listening = False  # Stop listening after detecting a button press
+                    break  # Exit inner loop
+
+            # Read axis values (-1 to 1 range)
+            for i in range(joystick.get_numaxes()):
+                axis_value = joystick.get_axis(i)
+                if i == 4 or i == 5:
+                    normalized_trigger = (axis_value + 1) / 2  # Convert -1 to 1 into 0 to 1
+                    if abs(normalized_trigger) > 0.9:  # Ignore small movements
+                        print(f"Trigger {i - 3}: {normalized_trigger}")
+                        button = i + 16
+                        listening = False  # Stop listening
+                        break
+                else:
+                    if abs(axis_value) > 0.9:  # Ignore small movements
+                        print(f"Axis {i}: {axis_value}")
+                        button = i + 16
+                        listening = False  # Stop listening
+                        break
+
+        # Assign the action to the correct list
+        if button is not None:
+            if button > 15:
+                controller_input_analogue_list[button - 16][2] = action
+                print("action set: "+str(action))
+
+            elif button >= 0:
+                controller_input_button_list[button][2] = str(action)
+            for menubutton in menu.button_list:
+                if menubutton["label"] == "Listening...":
+                    bl = menubutton["button_label"]
+                    menu.change_label(bl, bl)
+
+    @staticmethod
+    def button_to_event_tick():
+        global drift, bomb_throwing_speed, last_bomb_time
+        #print(controller_input_analogue_list)
+        for i in range(len(controller_input_button_list)):
+            button = controller_input_button_list[i]
+            if button[1] == "pressed":
+                if button[2] == "Up":  # Move up
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (x-axis for vertical movement)
+                    balls[0].velocity[0] *= friction
+
+                elif button[2] == "Down":  # Move down
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (x-axis for vertical movement)
+                    balls[0].velocity[0] *= friction
+                elif button[2] == "Left":  # Move left
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (y-axis for horizontal movement)
+                    balls[0].velocity[1] *= friction
+                elif button[2] == "Right":  # Move right
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (y-axis for horizontal movement)
+                    balls[0].velocity[1] *= friction
+                elif button[2] == "Shoot":
+                    menu.check_button_press(mouse_pos, "visual")
+                    crosshair.shoot()
+                elif button[2] == "Drift":
+                    print("driftinggg")
+                    drift = True
+                elif button[2] == "Bomb":
+                    bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300, True))
+
+            elif button[1] == "released":
+                if button[2] == "Shoot":
+                    menu.check_button_press(mouse_pos, "logical")
+                    menu.reset_button_states()  # Reset all button states when mouse is released
+                    crosshair.shoot(visual=True)
+            elif button[1] == "False":
+                if button[2] == "Shoot":
+                    crosshair.shoot(visual=True)
+                    pass
+                elif button[2] == "Drift":
+                    drift = False
+        for i in range(len(controller_input_analogue_list)):
+            analogue = controller_input_analogue_list[i]
+            #print(analogue)
+            if abs(analogue[1]) > DEADZONE:
+                if analogue[2] == "Down" or analogue[2] == "Up":  # Move down
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed*analogue[1], -max_velocity,
+                                                      max_velocity)
+                    # Apply friction to the other axis (x-axis for vertical movement)
+                    balls[0].velocity[0] *= friction
+                elif analogue[2] == "Right" or analogue[2] == "Left":  # Move right
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed*analogue[1], -max_velocity,
+                                                      max_velocity)
+                    # Apply friction to the other axis (y-axis for horizontal movement)
+                    balls[0].velocity[1] *= friction
+                elif analogue[2] == "Bomb":
+                    elapsed_time = pygame.time.get_ticks() - last_bomb_time
+                    if elapsed_time >= 1 / bomb_throwing_speed * 1000:  # Convert speed to milliseconds
+                        last_bomb_time = pygame.time.get_ticks()
+                        bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300 * analogue[1], True))
+
+    def save(self):
+        global controller_input_button_list, controller_input_analogue_list
+        root = ET.Element("controls")
+
+        # Save button inputs
+        buttons_elem = ET.SubElement(root, "buttons")
+        for button in controller_input_button_list:
+            button_elem = ET.SubElement(buttons_elem, "button")
+            ET.SubElement(button_elem, "name").text = button[0]
+            ET.SubElement(button_elem, "state").text = str(False)
+            ET.SubElement(button_elem, "action").text = str(button[2]) if button[2] is not None else ""
+
+        # Save analogue inputs
+        analogues_elem = ET.SubElement(root, "analogues")
+        for analogue in controller_input_analogue_list:
+            analogue_elem = ET.SubElement(analogues_elem, "analogue")
+            ET.SubElement(analogue_elem, "name").text = analogue[0]
+            ET.SubElement(analogue_elem, "state").text = str(0)
+            ET.SubElement(analogue_elem, "action").text = str(analogue[2]) if analogue[2] is not None else ""
+
+        # Write to file
+        tree = ET.ElementTree(root)
+        with open(self.controls_file, "wb") as file:
+            tree.write(file, encoding="utf-8", xml_declaration=True)
+
+    def load(self):
+        global controller_input_button_list, controller_input_analogue_list
+        try:
+            tree = ET.parse(self.controls_file)
+            root = tree.getroot()
+
+            # Load button inputs
+            controller_input_button_list = []
+            for button_elem in root.find("buttons"):
+                name = button_elem.find("name").text
+                state = button_elem.find("state").text
+                action = button_elem.find("action").text
+                action = action if action else None  # Convert empty strings to None
+                controller_input_button_list.append([name, state, action])
+
+            # Load analogue inputs
+            controller_input_analogue_list = []
+            for analogue_elem in root.find("analogues"):
+                name = analogue_elem.find("name").text
+                state = float(analogue_elem.find("state").text)  # Convert to float for axis values
+                action = analogue_elem.find("action").text
+                action = action if action else None
+                controller_input_analogue_list.append([name, state, action])
+
+            return controller_input_button_list, controller_input_analogue_list
+
+        except FileNotFoundError:
+            print("No controls file found. Using blanks.")
+            return [], []  # Return empty lists if a file doesn't exist
 
 class Upgrade:
     def __init__(self):
@@ -1669,14 +2112,16 @@ class Upgrade:
 rectangle_instance = Rectangles()
 crosshair = Crosshair()
 menu = Menu(0)
+controls = Controls()
 game_state = GameState()
-balls = [Ball(100, 100, 15, (200, 200), (255, 255, 0))]
+balls = [Ball(100, 100, 15, [200, 200], (255, 255, 0))]
+bombs = []
 enemies = Enemy()
 upgrade_instance = Upgrade()
 particles = Particle()
 crosshair.create_crosshair(0, 0, 80, 40, 5, (255, 0, 0), (0, 0))
 mb_down_toggled = 0
-mouse_button_held = {1: False, 3: False}
+mouse_button_held = {1: False, 3: False, "Press_Buffer": False}
 font = pygame.font.Font(None, 30)
 precompute_unit_rotations()
 
@@ -1686,14 +2131,26 @@ def call_both_spaces(param):
     space.step(param)
 
 
+def update_button_states():
+    for button in controller_input_button_list:
+        if button[1] == "released":
+            button[1] = "False"
+
+
 def main():
-    global no_sleep_frame_time, frame_time, frame_start_time, frame_counter, mouse_pos, smoothed_fps, paused, debug_mode, screen_width, screen_height, smoothed_lrps
+    global no_sleep_frame_time, frame_time, frame_start_time, frame_counter, mouse_pos, smoothed_fps, paused, debug_mode, screen_width, screen_height, smoothed_lrps, max_velocity, acceleration_speed, friction, accumulator
     running = True
     while running:
+        dt_real = clock.tick(target_fps) / 1000  # Convert ms to seconds
+        accumulator += dt_real
         frame_start_time = time.perf_counter()
         frame_counter += 1
         # Update (logical) section – for TPS
         if frame_time >= target_tick_time:  # Run TPS updates
+
+            if listening is not False:
+                controls.set_controller_button()
+
             enemies.move()
             # Handle input
             key = pygame.key.get_pressed()
@@ -1709,6 +2166,63 @@ def main():
                 if game_state.gamestate_list != 0:
                     game_state.gamestate_list[0]["reddings"] -= 1
                     menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
+            # Update the velocity based on WASD input, while respecting the max_velocity
+            if paused == 2:
+                if key[pygame.K_w] and key[pygame.K_d]:  # Move top-right (up + right)
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                elif key[pygame.K_w] and key[pygame.K_a]:  # Move top-left (up + left)
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                elif key[pygame.K_s] and key[pygame.K_d]:  # Move bottom-right (down + right)
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                elif key[pygame.K_s] and key[pygame.K_a]:  # Move bottom-left (down + left)
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                else:
+                    # Handle standard single axis movement
+                    if key[pygame.K_w]:  # Move up
+                        balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                              max_velocity)
+                        # Apply friction to the other axis (x-axis for vertical movement)
+                        balls[0].velocity[0] *= friction
+                    elif key[pygame.K_s]:  # Move down
+                        balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                              max_velocity)
+                        # Apply friction to the other axis (x-axis for vertical movement)
+                        balls[0].velocity[0] *= friction
+                    elif key[pygame.K_a]:  # Move left
+                        balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                              max_velocity)
+                        # Apply friction to the other axis (y-axis for horizontal movement)
+                        balls[0].velocity[1] *= friction
+                    elif key[pygame.K_d]:  # Move right
+                        balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                              max_velocity)
+                        # Apply friction to the other axis (y-axis for horizontal movement)
+                        balls[0].velocity[1] *= friction
+                if balls[0].x > screen_width:
+                    balls[0].velocity[0] = -balls[0].velocity[0]
+                elif balls[0].y > screen_height:
+                    balls[0].velocity[1] = -balls[0].velocity[1]
+                if not key[pygame.K_SPACE] and not drift:
+                    balls[0].velocity[0] *= friction-0.01
+                    balls[0].velocity[1] *= friction-0.01
+
+                # Apply the final velocities (no need for additional float-to-int conversion)
+                balls[0].x += int(balls[0].velocity[0])
+                balls[0].y += int(balls[0].velocity[1])
+                balls[0].body.position += int(balls[0].velocity[0]), int(balls[0].velocity[1])
+
             movement_speed = frame_time  # Scale by frame time for consistent movement
 
             # Directly update the ball's position
@@ -1722,24 +2236,34 @@ def main():
                     balls[0].body.position = (balls[0].body.position[0] - movement_speed, balls[0].body.position[1])
                 if key[pygame.K_d]:
                     balls[0].body.position = (balls[0].body.position[0] + movement_speed, balls[0].body.position[1])
-
+            if joystick is not False:
+                controls.button_to_event_tick()
+                update_button_states()
+                mouse_pos_pre = (mouse_pos[0] + controller_input_analogue_list[2][1]*POINTER_SPEED, mouse_pos[1] + controller_input_analogue_list[3][1]*POINTER_SPEED)
+                if 0 <= mouse_pos_pre[0] <= screen_width:
+                    mouse_pos = mouse_pos_pre[0], mouse_pos[1]
+                if 0 <= mouse_pos_pre[1] <= screen_height:
+                    mouse_pos = mouse_pos[0], mouse_pos_pre[1]
+            else:
+                mouse_pos = pygame.mouse.get_pos()
             # Event handling
             for event in pygame.event.get():
-                mouse_pos = pygame.mouse.get_pos()
+
+
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     raise SystemExit
-                if event.type == pygame.KEYDOWN:
+                elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_0:
                         menu.change_menu(0)
                         print('0')
-                    if event.key == pygame.K_1:
+                    elif event.key == pygame.K_1:
                         menu.change_menu(1)
                         print('1')
-                    if event.key == pygame.K_2:
+                    elif event.key == pygame.K_2:
                         menu.change_menu(2)
                         print('2')
-                    if event.key == pygame.K_F6:
+                    elif event.key == pygame.K_F6:
                         if debug_mode == 3:
                             debug_mode = 0
                         elif debug_mode == 0:
@@ -1748,7 +2272,7 @@ def main():
                             debug_mode = 2
                         elif debug_mode == 2:
                             debug_mode = 3
-                    if event.key == pygame.K_k:
+                    elif event.key == pygame.K_k:
                         if paused == 3:
                             paused = 0
                         elif paused == 0:
@@ -1760,21 +2284,54 @@ def main():
                     elif event.key == pygame.K_ESCAPE:
                         running = False
                 if event.type == pygame.MOUSEBUTTONDOWN:
+                    mouse_button_held["Press_Buffer"] = True
                     if event.button == 1:  # Left mouse button
                         mouse_button_held[1] = True
                         menu.check_button_press(mouse_pos, "visual")
                     elif event.button == 3:  # Right mouse button
                         mouse_button_held[3] = True
-                        enemies.create_enemy(mouse_pos[0], mouse_pos[1], 60, 0, (255, 0, 0), (255, 200, 0), 1, 3, 100,
-                                             100, 45, None,
-                                             False, None)
+                        # enemies.create_enemy(mouse_pos[0], mouse_pos[1], 60, 0, (255, 0, 0), (255, 200, 0), 1, 3, 100,
+                        #                      100, 45, None,
+                        #                      False, None)
+                        bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300, True))
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 1:  # Left mouse button
                         mouse_button_held[1] = False
+                        if mouse_button_held["Press_Buffer"]:
+                            menu.check_button_press(mouse_pos, "logical")
+                            menu.reset_button_states()  # Reset all button states when mouse is released
                     elif event.button == 3:  # Right mouse button
                         mouse_button_held[3] = False
-                    menu.check_button_press(mouse_pos, "logical")
-                    menu.reset_button_states()  # Reset all button states when mouse is released
+                    mouse_button_held["Press_Buffer"] = False
+                if joystick is not False:
+                    if event.type == pygame.JOYBUTTONDOWN:
+                        print(f"Button {event.button} pressed")
+                        controller_input_button_list[event.button][1] = "pressed"
+                    elif event.type == pygame.JOYBUTTONUP:
+                        if controller_input_button_list[event.button][1] == "pressed":
+                            controller_input_button_list[event.button][1] = "released"
+
+                    # Read axis values (-1 to 1 range)
+                    for i in range(joystick.get_numaxes()):
+                        axis_value = joystick.get_axis(i)
+                        if i == 4 or i == 5:
+                            normalized_trigger = (axis_value + 1) / 2  # Converts -1 to 1 into 0 to 1
+                            if abs(normalized_trigger) > DEADZONE:  # Ignore small movements
+                                #print(f"Trigger {i-3}: {normalized_trigger}")
+                                controller_input_analogue_list[i][1] = normalized_trigger
+                            else:
+                                controller_input_analogue_list[i][1] = 0
+                        else:
+                            if abs(axis_value) > DEADZONE:  # Ignore small movements
+                                #print(f"Axis {i}: {axis_value}")
+                                controller_input_analogue_list[i][1] = axis_value
+                            else:
+                                controller_input_analogue_list[i][1] = 0
+
+                    # # Read D-pad state
+                    # for i in range(joystick.get_numhats()):
+                    #     print(f"D-Pad {i}: {joystick.get_hat(i)}")
+
                 if event.type == pygame.VIDEORESIZE:
                     screen_width = screen.get_width()
                     screen_height = screen.get_height()
@@ -1799,6 +2356,12 @@ def main():
                     draw_ball_debug_info(ball)
 
             enemies.draw()
+            for bomb in bombs:
+                bomb.move()
+                bomb.draw()
+                if bomb.animation_timer >= bomb.animation_frames:
+                    bombs.remove(bomb)  # Removes the first occurrence of the object 'bomb' from the list
+
             #no_physics_space.debug_draw(draw_options)
             #space.debug_draw(draw_options)
             menu.move_switch()
@@ -1820,43 +2383,50 @@ def main():
                 # Normal Pymunk physics step
                 call_both_spaces(frame_time)
 
-            elif paused == 1:  # Partially paused state (non-player bodies freeze)
-                for body in space.bodies:
-                    if body != balls[0].body:  # Skip the player's body
-                        if body not in paused_velocities:
-                            # Save the body's current velocities
-                            paused_velocities[body] = (body.velocity, body.angular_velocity)
-                        body.velocity = (0, 0)
-                        body.angular_velocity = 0
-                # Perform a minimal physics step for collision detection
-                call_both_spaces(0)
 
-            elif paused == 2:  # Fully paused state (all bodies freeze except the player)
+            elif paused == 1:
                 for body in space.bodies:
-                    if body == balls[0].body:  # Skip freezing the player's body
-                        paused_velocities[body] = (body.velocity, body.angular_velocity)
-                        continue
                     if body not in paused_velocities:
                         # Save the body's current velocities
                         paused_velocities[body] = (body.velocity, body.angular_velocity)
-                    body.velocity = (0, 0)
-                    body.angular_velocity = 0
+                    if body != balls[0].body:  # Only freeze non-player bodies
+                        body.velocity = (0, 0)
+                        body.angular_velocity = 0
+
                 # Perform a minimal physics step for collision detection
-                call_both_spaces(0)
-            elif paused == 3:
-                # Restore saved velocities for all bodies
+                call_both_spaces(frame_time)
+
+            elif paused == 2:
                 for body, (velocity, angular_velocity) in paused_velocities.items():
                     body.velocity = velocity
                     body.angular_velocity = angular_velocity
-                # Normal Pymunk physics step
+                paused_velocities.clear()  # Clear the saved velocities
+                for body in space.bodies:
+                    if body == balls[0].body:  # Only freeze player body
+                        paused_velocities[body] = (body.velocity, body.angular_velocity)
+                        body.velocity = (0, 0)
+                        body.angular_velocity = 0
+
+                # Perform a minimal physics step for collision detection
                 call_both_spaces(frame_time)
+
+            elif paused == 3:
+                for body in space.bodies:
+                    if body not in paused_velocities:
+                        # Save the body's current velocities
+                        paused_velocities[body] = (body.velocity, body.angular_velocity)
+                        body.velocity = (0, 0)
+                        body.angular_velocity = 0
+
+                # Perform a minimal physics step for collision detection
+                call_both_spaces(0)
 
             if debug_mode == 3:
                 #draw_debug_grid(mouse_pos)
                 pass
             # Enforce frame delay to match target FPS
 
-            smoothing_factor = 0.0  # Adjust this between 0 and 1; closer to 1 means more smoothing
+            smoothing_factor = 0.5  # Adjust this between 0 and 1; closer to 1 means more smoothing
 
             # Update smoothed FPS based on time since last frame
             if frame_time > 0:  # Prevent division by zero
