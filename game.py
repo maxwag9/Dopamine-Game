@@ -80,6 +80,7 @@ ENEMY_COLLISION_TYPE = 2
 rotation_cache = {}
 paused_velocities = {}
 paused = 0
+running = True
 timer = False  # binary timer to execute stuff only every second time
 sdl = ctypes.CDLL("SDL2.dll")
 hwnd = pygame.display.get_wm_info()['window']
@@ -98,21 +99,28 @@ acceleration_speed = 0.8  # Player ball acceleration
 friction = 0.98  # Friction for the perpendicular axis when changing the players' movement direction
 debug_mode = 3
 collision_mode = 0
+screen_limit_x = screen_width*2
+screen_limit_y = screen_height*2
 playing = False
 enemy_image_path = None
 enemy_image = screen
-target_tps = 120
+target_tps = 20
 target_tick_time = 1 / target_tps
+target_itps = 60
+target_input_tick_time = 1 / target_itps
 target_fps = 120
 target_frame_time = 1 / target_fps
+prev_time = time.time()
 no_sleep_frame_time = 0.05
 frame_time = 0.05
 frame_start_time = time.perf_counter()
 smoothed_fps = 240
 smoothed_lrps = smoothed_fps
 frame_counter = 0
+tick_counter = 0
 alpha = 0.0  # Interpolation factor
 accumulator = 0.0  # Stores leftover time between physics steps
+input_accumulator = 0.0
 bg_color = (8, 0, 0)
 
 
@@ -160,13 +168,22 @@ def damage_enemy(red_nemesis, damage=1, cross_shoot=None, ball=None):
         if ball.hp <= 0:
             ball.dead = True
             paused = 0
-
     else:
         red_nemesis["hp"] -= damage
         if red_nemesis["hp"] < 0:
             red_nemesis["lost_hp"] = damage + red_nemesis["hp"]
         else:
             red_nemesis["lost_hp"] = damage
+
+    if red_nemesis["hp"] <= 0:
+        remove_enemy(red_nemesis["body"], red_nemesis["shape"], red_nemesis, enemies.red_nemesis_list)
+        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 30, 3, red_nemesis["color"], "damage", 2)
+        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 20, 0.1, (10, 240, 5), "reddings", 0)
+
+def remove_enemy(enemy_body, shape, red_nemesis, red_nemesis_list):
+    space.remove(enemy_body, shape)
+    if red_nemesis in red_nemesis_list:  # Ensure it's in the list before removing
+        red_nemesis_list.remove(red_nemesis)
 
 def select_texture_and_scale():
     root = Tk()
@@ -699,60 +716,6 @@ class Enemy:
     def __init__(self):
         self.red_nemesis_list = []
 
-    def move(self):
-        global timer, collision_mode
-        max_enemy_velocity = 20
-        velocity_limit = 10
-        screen_limit_x = screen_width * 2
-        screen_limit_y = screen_height * 2
-        for i in reversed(range(len(self.red_nemesis_list))):  # Iterate in reverse
-            red_nemesis = self.red_nemesis_list[i]
-            enemy_body = red_nemesis["body"]
-            shape = red_nemesis["shape"]
-            speed = red_nemesis["speed"]
-
-            # Update position and rotation
-            enemy_body.position += enemy_body.velocity
-            red_nemesis["pos_x"], red_nemesis["pos_y"] = enemy_body.position
-
-            if frame_counter % 2 == 0:  # Ensures it runs every 2 frames (adjust as needed)
-                if not red_nemesis["rotation_initialized"]:
-                    enemy_body.angular_velocity = speed / 3 if red_nemesis["rotation"] > 0 else -speed / 3
-                    red_nemesis["rotation_initialized"] = True
-
-                red_nemesis["rotation"] = math.degrees(enemy_body.angle) % 360    # Store as degrees
-
-            # Limit velocity
-            vx, vy = enemy_body.velocity
-            enemy_body.velocity = (
-                max(-velocity_limit, min(vx, velocity_limit)) if abs(vx) > max_enemy_velocity else vx,
-                max(-velocity_limit, min(vy, velocity_limit)) if abs(vy) > max_enemy_velocity else vy,
-            )
-
-            # Remove enemies outside screen bounds
-            if abs(red_nemesis["pos_x"]) > screen_limit_x or abs(red_nemesis["pos_y"]) > screen_limit_y:
-                space.remove(enemy_body, shape)
-                self.red_nemesis_list.pop(i)
-                continue
-
-            # Handle enemy health
-            if red_nemesis["hp"] <= 0:
-                space.remove(enemy_body, shape)
-                particles.create_particle(
-                    red_nemesis["pos_x"], red_nemesis["pos_y"], 30, 3, red_nemesis["color"], "damage", 2
-                )
-                particles.create_particle(
-                    red_nemesis["pos_x"], red_nemesis["pos_y"], 20, 0.1, (10, 240, 5), "reddings", 0
-                )
-                self.red_nemesis_list.pop(i)
-                continue
-
-        # Handle wave logic if enemy count drops below the threshold
-        if 50 > len(self.red_nemesis_list) > 0:
-            collision_mode = 1 - collision_mode  # Toggle collision mode
-            self.wave()
-            print("CREATED ENEMIES")
-
     def choose_random_props(self):
         width = screen.get_width()
         height = screen.get_height()
@@ -762,7 +725,7 @@ class Enemy:
             if not red_nemesis["random_props_chosen"]:
                 #if red_nemesis["label"] == "random_guy":
                 if red_nemesis["speed"] is None:
-                    red_nemesis["speed"] = get_biased_random_float(0.5, 3)
+                    red_nemesis["speed"] = get_biased_random_float(2, 12)
                 if red_nemesis["size"] is None:
                     red_nemesis["size"] = rand.randint(50, 80)
                 if red_nemesis["rotation"] is None:
@@ -821,6 +784,9 @@ class Enemy:
                 shape.elasticity = 1
                 shape.friction = 0
                 space.add(enemy_body, shape)
+                if not red_nemesis["rotation_initialized"]:
+                    enemy_body.angular_velocity = red_nemesis["speed"] / 20 if red_nemesis["rotation"] > 0 else -red_nemesis["speed"] / 20
+                    red_nemesis["rotation_initialized"] = True
                 red_nemesis["body"] = enemy_body
                 red_nemesis["shape"] = shape
                 red_nemesis["shape"].collision_type = 2
@@ -842,7 +808,9 @@ class Enemy:
             "body": None,
             "shape": None,
             "pos_x": pos_x,
+            "prev_pos_x": 0,
             "pos_y": pos_y,
+            "prev_pos_y": 0,
             "vel_x": 0,
             "vel_y": 0,
             "size": size,
@@ -858,6 +826,7 @@ class Enemy:
             "prev_lost_hp": 0,
             "animated_lost_hp": 0,
             "rotation": rotation,
+            "prev_rotation": 0,
             "vertices": [],
             "rotation_initialized": False,
             "last_rotation": 0,
@@ -874,38 +843,32 @@ class Enemy:
         self.red_nemesis_list.append(enemy_properties)
         self.choose_random_props()
 
-    def draw(self):
-        global debug_mode, enemy_image, enemy_image_path
-        for red_nemesis in self.red_nemesis_list:
-            pos_x = red_nemesis["pos_x"]
-            pos_y = red_nemesis["pos_y"]
-            size = red_nemesis["size"]
-            color = red_nemesis["color"]
-            hp = red_nemesis["hp"]
-            max_hp = red_nemesis["max_hp"]
-            # Calculate vertices based on position, size, and rotation
-            red_nemesis["vertices"] = get_rotated_vertices(
-                red_nemesis["pos_x"],
-                red_nemesis["pos_y"],
-                red_nemesis["size"],
-                red_nemesis["rotation"]
-            )
-            vertices = red_nemesis["vertices"]
-            edge_color = red_nemesis["edge_color"]
-            if red_nemesis["is_attacked"]:
-                hp_factor = hp / max_hp
-                pos_x_half_size = pos_x - size / 2
-                pos_y_size = pos_y + size
-                tenth_size = size * 0.1
+    def move(self):
+        """Updates enemy logic (position, rotation, HP, etc.), called at 20 TPS."""
+        global collision_mode
+        velocity_limit = 10
+        second_frame = frame_counter % 1 == 0
+        twentieth_frame = frame_counter % 20 == 0
+        for i in reversed(range(len(self.red_nemesis_list))):
+            red_nemesis = self.red_nemesis_list[i]
+            enemy_body = red_nemesis["body"]
 
-                # Draw the full HP bar (red background and green HP bar)
-                pygame.draw.rect(screen, (255, 0, 0), (pos_x_half_size, pos_y_size, size, tenth_size))
-                pygame.draw.rect(screen, (0, 255, 0), (pos_x_half_size, pos_y_size, size * hp_factor + 1, tenth_size))
+            # Update position and rotation
+            enemy_body.position += enemy_body.velocity
+            pos_x, pos_y = enemy_body.position
+            # Store the previous position for interpolation
+            red_nemesis["prev_pos_x"] = red_nemesis["pos_x"]
+            red_nemesis["prev_pos_y"] = red_nemesis["pos_y"]
+            # Set the new positions *AFTER* storing previous position!!!
+            red_nemesis["pos_x"], red_nemesis["pos_y"] = pos_x, pos_y
 
+            if second_frame:
+                red_nemesis["prev_rotation"] = red_nemesis["rotation"]
+                red_nemesis["rotation"] = math.degrees(enemy_body.angle) % 360
+
+                # HP bar animation handling
                 if red_nemesis["lost_hp"] > 0:
-                    # Combine current and previous lost HP for seamless animation
                     if red_nemesis["prev_lost_hp"] != red_nemesis["lost_hp"] and red_nemesis["prev_lost_hp"] != 0:
-                        # RUDELY INTERRUPTED!!! WHO DARES WAKE THE FLYING DUTCHMAN!!
                         red_nemesis["lost_hp"] += red_nemesis["prev_lost_hp"]
                         red_nemesis["previous_framecount"] = 0
 
@@ -913,25 +876,75 @@ class Enemy:
                         red_nemesis["previous_framecount"] = frame_counter
 
                     elapsed_frames = frame_counter - red_nemesis["previous_framecount"]
-                    # Calculate the animation progress (clamped to [0, 1])
                     animation_progress = min(elapsed_frames / 200, 1)
-                    # Update the actual lost_hp value gradually
-                    initial_lost_hp = red_nemesis["lost_hp"]
-                    red_nemesis["lost_hp"] = max(0, initial_lost_hp * (1 - animation_progress))
-                    # Calculate the size of the animated loss bar
-                    animated_size = size * (red_nemesis["lost_hp"] / 100)
-                    # Draw the animated loss bar
-                    pygame.draw.rect(screen, (200, 255, 200),
-                                     (max(pos_x_half_size, pos_x_half_size + size * hp_factor), pos_y_size,
-                                      animated_size, tenth_size))
-                    # Reset animation if finished
+                    red_nemesis["lost_hp"] = max(0, red_nemesis["lost_hp"] * (1 - animation_progress))
+
                     if animation_progress >= 1:
                         red_nemesis["previous_framecount"] = 0
                         red_nemesis["lost_hp"] = 0
                     else:
-                        # Store the current lost HP for the next frame
                         red_nemesis["prev_lost_hp"] = red_nemesis["lost_hp"]
 
+            if twentieth_frame:
+                shape = red_nemesis["shape"]
+                if abs(pos_x) > screen_limit_x or abs(pos_y) > screen_limit_y:
+                    remove_enemy(enemy_body, shape, red_nemesis, self.red_nemesis_list)
+                    continue
+
+                # Limit velocity
+                vx, vy = enemy_body.velocity
+                enemy_body.velocity = (
+                    max(-velocity_limit, min(vx, velocity_limit)),
+                    max(-velocity_limit, min(vy, velocity_limit))
+                )
+
+        if twentieth_frame:
+            # Handle wave logic if enemy count drops below the threshold
+            if 0 < len(self.red_nemesis_list) < 50:
+                collision_mode = 1 - collision_mode  # Toggle collision mode
+                self.wave()
+                print("CREATED ENEMIES")
+
+
+    def draw(self, alpha_blend):
+        """Renders enemies with interpolation, called every frame."""
+        global debug_mode, enemy_image, enemy_image_path
+        # if len(self.red_nemesis_list) != 0:
+        #      print("previous position x: ", self.red_nemesis_list[0]["prev_pos_x"], "current position x: ", self.red_nemesis_list[0]["pos_x"], "Alpha blend: ",alpha_blend)
+        #print(alpha, "accu: ", accumulator, target_tick_time)
+        for red_nemesis in self.red_nemesis_list:
+            # Interpolate position & rotation
+            pos_x = (1 - alpha_blend) * red_nemesis["prev_pos_x"] + alpha_blend * red_nemesis["pos_x"]
+            pos_y = (1 - alpha_blend) * red_nemesis["prev_pos_y"] + alpha_blend * red_nemesis["pos_y"]
+
+            diff = (red_nemesis["rotation"] - red_nemesis["prev_rotation"] + 180) % 360 - 180
+            rotation = red_nemesis["prev_rotation"] + alpha_blend * diff
+            # if red_nemesis == self.red_nemesis_list[0]:
+            #     print("1. rotation, alpha_blend: ", rotation, alpha_blend)
+            #     print("Position x after calculation: ", pos_x, "Frame: ", frame_counter)
+            size = red_nemesis["size"]
+            color = red_nemesis["color"]
+            hp = red_nemesis["hp"]
+            max_hp = red_nemesis["max_hp"]
+            vertices = get_rotated_vertices(pos_x, pos_y, size, rotation)
+            edge_color = red_nemesis["edge_color"]
+
+            # Draw HP bar if the enemy was attacked
+            if red_nemesis["is_attacked"]:
+                hp_factor = hp / max_hp
+                pos_x_half_size = pos_x - size / 2
+                pos_y_size = pos_y + size
+                tenth_size = size * 0.1
+
+                pygame.draw.rect(screen, (255, 0, 0), (pos_x_half_size, pos_y_size, size, tenth_size))
+                pygame.draw.rect(screen, (0, 255, 0), (pos_x_half_size, pos_y_size, size * hp_factor + 1, tenth_size))
+
+                animated_size = size * (red_nemesis["lost_hp"] / 100)
+                pygame.draw.rect(screen, (200, 255, 200),
+                                 (max(pos_x_half_size, pos_x_half_size + size * hp_factor), pos_y_size,
+                                  animated_size, tenth_size))
+
+            # Debug mode rendering
             if debug_mode == 1:
                 pygame.draw.polygon(screen, color, vertices, 3)
             if debug_mode == 0 or debug_mode == 3:
@@ -941,10 +954,10 @@ class Enemy:
                 if enemy_image is not None:
                     red_nemesis["image"] = pygame.transform.scale(enemy_image, (size, size))
                 if red_nemesis["image"] is not None:
-                    if int(red_nemesis["rotation"]) != int(red_nemesis["last_rotation"]):
-                        red_nemesis["last_rotation"] = red_nemesis["rotation"]
+                    if int(rotation) != int(red_nemesis.get("last_rotation", 0)):
+                        red_nemesis["last_rotation"] = rotation
                         red_nemesis["rotated_surface"] = pygame.transform.rotate(
-                            red_nemesis["image"], red_nemesis["rotation"]
+                            red_nemesis["image"], rotation
                         )
                     rotated_rect = red_nemesis["rotated_surface"].get_rect(center=(pos_x, pos_y))
                     screen.blit(red_nemesis["rotated_surface"], rotated_rect)
@@ -1000,20 +1013,20 @@ class Bomb:
 
             # Alpha variation over time
             if self.animation_timer < self.animation_frames // 2:
-                alpha = 50 + (30 * (self.animation_timer / (self.animation_frames // 2)))  # From 50 to 80
+                alpha_bomb = 50 + (30 * (self.animation_timer / (self.animation_frames // 2)))  # From 50 to 80
             else:
-                alpha = max(
+                alpha_bomb = max(
                     80 - (80 * ((self.animation_timer - self.animation_frames // 2) / (self.animation_frames // 2))),
                     0)  # Fades to 0
 
-            explosion_color = (255, 0, 0, int(alpha))  # RGBA with variable alpha
+            explosion_color = (255, 0, 0, int(alpha_bomb))  # RGBA with variable alpha
             explosion_surface = pygame.Surface((self.current_explosion_size * 2, self.current_explosion_size * 2),
                                                pygame.SRCALPHA)
             pygame.draw.circle(explosion_surface, explosion_color,
                                (self.current_explosion_size, self.current_explosion_size), self.current_explosion_size)
 
             # Draw contour
-            pygame.draw.circle(explosion_surface, (255, 0, 0, int(alpha)),
+            pygame.draw.circle(explosion_surface, (255, 0, 0, int(alpha_bomb)),
                                (self.current_explosion_size, self.current_explosion_size), self.current_explosion_size,
                                3)
 
@@ -1969,8 +1982,10 @@ class Controls:
 
         # Write to file
         tree = ET.ElementTree(root)
-        with open(self.controls_file, "wb") as file:
-            tree.write(file, encoding="utf-8", xml_declaration=True)
+        tree.write(self.controls_file, encoding="utf-8", xml_declaration=True)
+        # Never experienced the 1 hour, 3 minutes and 34th second...
+        # On 06.02.2025 (Wednesday my boys! (Thursday actually))
+
 
     def load(self):
         global controller_input_button_list, controller_input_analogue_list
@@ -2136,325 +2151,328 @@ def update_button_states():
         if button[1] == "released":
             button[1] = "False"
 
+def tick():
+    if listening is not False:
+        controls.set_controller_button()
+
+    key = pygame.key.get_pressed()
+    if key[pygame.K_UP]:
+        for cross in crosshair.crosshair_list:
+            cross["size"] += 1
+        if game_state.gamestate_list != 0:
+            game_state.gamestate_list[0]["reddings"] += 1
+            menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
+    if key[pygame.K_DOWN]:
+        for cross in crosshair.crosshair_list:
+            cross["size"] -= 1
+        if game_state.gamestate_list != 0:
+            game_state.gamestate_list[0]["reddings"] -= 1
+            menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
+    # Update the velocity based on WASD input, while respecting the max_velocity
+    if paused == 2 or paused == 3:
+        if key[pygame.K_w] and key[pygame.K_d]:  # Move top-right (up + right)
+            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                  max_velocity)
+            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                  max_velocity)
+        elif key[pygame.K_w] and key[pygame.K_a]:  # Move top-left (up + left)
+            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                  max_velocity)
+            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                  max_velocity)
+        elif key[pygame.K_s] and key[pygame.K_d]:  # Move bottom-right (down + right)
+            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                  max_velocity)
+            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                  max_velocity)
+        elif key[pygame.K_s] and key[pygame.K_a]:  # Move bottom-left (down + left)
+            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                  max_velocity)
+            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                  max_velocity)
+        else:
+            # Handle standard single axis movement
+            if key[pygame.K_w]:  # Move up
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                # Apply friction to the other axis (x-axis for vertical movement)
+                balls[0].velocity[0] *= friction
+            elif key[pygame.K_s]:  # Move down
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                # Apply friction to the other axis (x-axis for vertical movement)
+                balls[0].velocity[0] *= friction
+            elif key[pygame.K_a]:  # Move left
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                # Apply friction to the other axis (y-axis for horizontal movement)
+                balls[0].velocity[1] *= friction
+            elif key[pygame.K_d]:  # Move right
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                # Apply friction to the other axis (y-axis for horizontal movement)
+                balls[0].velocity[1] *= friction
+        if balls[0].x > screen_width:
+            balls[0].velocity[0] = -balls[0].velocity[0]
+        elif balls[0].y > screen_height:
+            balls[0].velocity[1] = -balls[0].velocity[1]
+        if not key[pygame.K_SPACE] and not drift:
+            balls[0].velocity[0] *= friction - 0.01
+            balls[0].velocity[1] *= friction - 0.01
+        # Apply the final velocities (no need for additional float-to-int conversion)
+        balls[0].x += int(balls[0].velocity[0])
+        balls[0].y += int(balls[0].velocity[1])
+        balls[0].body.position += int(balls[0].velocity[0]), int(balls[0].velocity[1])
+
+    enemies.move()
+
+def input_tick():
+    global paused, screen_width, screen_height, mouse_pos, debug_mode, running
+    # Handle input
+
+    if joystick is not False:
+        controls.button_to_event_tick()
+        update_button_states()
+        mouse_pos_pre = (mouse_pos[0] + controller_input_analogue_list[2][1] * POINTER_SPEED,
+                         mouse_pos[1] + controller_input_analogue_list[3][1] * POINTER_SPEED)
+        if 0 <= mouse_pos_pre[0] <= screen_width:
+            mouse_pos = mouse_pos_pre[0], mouse_pos[1]
+        if 0 <= mouse_pos_pre[1] <= screen_height:
+            mouse_pos = mouse_pos[0], mouse_pos_pre[1]
+    else:
+        mouse_pos = pygame.mouse.get_pos()
+
+    # Event handling
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            raise SystemExit
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_0:
+                menu.change_menu(0)
+                print('0')
+            elif event.key == pygame.K_1:
+                menu.change_menu(1)
+                print('1')
+            elif event.key == pygame.K_2:
+                menu.change_menu(2)
+                print('2')
+            elif event.key == pygame.K_F6:
+                if debug_mode == 3:
+                    debug_mode = 0
+                elif debug_mode == 0:
+                    debug_mode = 1
+                elif debug_mode == 1:
+                    debug_mode = 2
+                elif debug_mode == 2:
+                    debug_mode = 3
+            elif event.key == pygame.K_k:
+                if paused == 3:
+                    paused = 0
+                elif paused == 0:
+                    paused = 1
+                elif paused == 1:
+                    paused = 2
+                elif paused == 2:
+                    paused = 3
+            elif event.key == pygame.K_ESCAPE:
+                running = False
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse_button_held["Press_Buffer"] = True
+            if event.button == 1:  # Left mouse button
+                mouse_button_held[1] = True
+                menu.check_button_press(mouse_pos, "visual")
+            elif event.button == 3:  # Right mouse button
+                mouse_button_held[3] = True
+                # enemies.create_enemy(mouse_pos[0], mouse_pos[1], 60, 0, (255, 0, 0), (255, 200, 0), 1, 3, 100,
+                #                      100, 45, None,
+                #                      False, None)
+                bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300, True))
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:  # Left mouse button
+                mouse_button_held[1] = False
+                if mouse_button_held["Press_Buffer"]:
+                    menu.check_button_press(mouse_pos, "logical")
+                    menu.reset_button_states()  # Reset all button states when mouse is released
+            elif event.button == 3:  # Right mouse button
+                mouse_button_held[3] = False
+            mouse_button_held["Press_Buffer"] = False
+        if joystick is not False:
+            if event.type == pygame.JOYBUTTONDOWN:
+                print(f"Button {event.button} pressed")
+                controller_input_button_list[event.button][1] = "pressed"
+            elif event.type == pygame.JOYBUTTONUP:
+                if controller_input_button_list[event.button][1] == "pressed":
+                    controller_input_button_list[event.button][1] = "released"
+
+            # Read axis values (-1 to 1 range)
+            for i in range(joystick.get_numaxes()):
+                axis_value = joystick.get_axis(i)
+                if i == 4 or i == 5:
+                    normalized_trigger = (axis_value + 1) / 2  # Converts -1 to 1 into 0 to 1
+                    if abs(normalized_trigger) > DEADZONE:  # Ignore small movements
+                        # print(f"Trigger {i-3}: {normalized_trigger}")
+                        controller_input_analogue_list[i][1] = normalized_trigger
+                    else:
+                        controller_input_analogue_list[i][1] = 0
+                else:
+                    if abs(axis_value) > DEADZONE:  # Ignore small movements
+                        # print(f"Axis {i}: {axis_value}")
+                        controller_input_analogue_list[i][1] = axis_value
+                    else:
+                        controller_input_analogue_list[i][1] = 0
+
+            # # Read D-pad state
+            # for i in range(joystick.get_numhats()):
+            #     print(f"D-Pad {i}: {joystick.get_hat(i)}")
+
+        if event.type == pygame.VIDEORESIZE:
+            screen_width = screen.get_width()
+            screen_height = screen.get_height()
+            screen_limit_x = screen_width * 2
+            screen_limit_y = screen_height * 2
+    if mouse_button_held[1]:
+        crosshair.shoot()
+    else:
+        crosshair.shoot(visual=True)
+
+def render():
+    global smoothed_fps, mouse_pos
+    # Render section – for FPS
+
+    # Drawing/rendering updates
+    screen.fill(bg_color)  # Fill the display with a solid color
+    if pygame.event.get(pygame.MOUSEMOTION):
+        mouse_pos = pygame.mouse.get_pos()
+    crosshair.move_crosshair(mouse_pos[0], mouse_pos[1])
+    rectangle_instance.draw_lines(None, None, None, None, None, "draw")
+
+    particles.draw()
+    for ball in balls:
+        ball.move()
+        if debug_mode == 0 or debug_mode == 2 or debug_mode == 3:
+            ball.draw()
+        elif debug_mode == 1:
+            draw_ball_debug_info(ball)
+
+    enemies.draw(alpha)
+    for bomb in bombs:
+        bomb.move()
+        bomb.draw()
+        if bomb.animation_timer >= bomb.animation_frames:
+            bombs.remove(bomb)  # Removes the first occurrence of the object 'bomb' from the list
+
+    # no_physics_space.debug_draw(draw_options)
+    # space.debug_draw(draw_options)
+    menu.move_switch()
+    menu.draw_menu()
+
+    rectangle_instance.draw_rects(None, None, None, "draw")
+    crosshair.draw()
+
+    # Update the pymunk space (run the physics simulation)
+    handler = space.add_collision_handler(1, 2)
+    handler.begin = ball_hits_enemy
+
+    if paused == 0:  # Unpaused state
+        # Restore saved velocities for all bodies
+        for body, (velocity, angular_velocity) in paused_velocities.items():
+            body.velocity = velocity
+            body.angular_velocity = angular_velocity
+        paused_velocities.clear()  # Clear the saved velocities
+        # Normal Pymunk physics step
+        call_both_spaces(frame_time)
+
+    elif paused == 1:
+        for body in space.bodies:
+            if body not in paused_velocities:
+                # Save the body's current velocities
+                paused_velocities[body] = (body.velocity, body.angular_velocity)
+            if body != balls[0].body:  # Only freeze non-player bodies
+                body.velocity = (0, 0)
+                body.angular_velocity = 0
+
+        # Perform a minimal physics step for collision detection
+        call_both_spaces(frame_time)
+
+    elif paused == 2:
+        for body, (velocity, angular_velocity) in paused_velocities.items():
+            body.velocity = velocity
+            body.angular_velocity = angular_velocity
+        paused_velocities.clear()  # Clear the saved velocities
+        for body in space.bodies:
+            if body == balls[0].body:  # Only freeze player body
+                paused_velocities[body] = (body.velocity, body.angular_velocity)
+                body.velocity = (0, 0)
+                body.angular_velocity = 0
+
+        # Perform a minimal physics step for collision detection
+        call_both_spaces(frame_time)
+
+    elif paused == 3:
+        for body in space.bodies:
+            if body not in paused_velocities:
+                # Save the body's current velocities
+                paused_velocities[body] = (body.velocity, body.angular_velocity)
+                body.velocity = (0, 0)
+                body.angular_velocity = 0
+
+        # Perform a minimal physics step for collision detection
+        call_both_spaces(0)
+
+    if debug_mode == 3:
+        # draw_debug_grid(mouse_pos)
+        pass
+    # Enforce frame delay to match target FPS
+
+    smoothing_factor = 0.5  # Adjust this between 0 and 1; closer to 1 means more smoothing
+
+    # Update smoothed FPS based on time since last frame
+    if frame_time > 0:  # Prevent division by zero
+        current_fps = 1 / frame_time  # Convert ms to FPS
+        smoothed_fps = (smoothing_factor * smoothed_fps) + ((1 - smoothing_factor) * current_fps)
+        current_fps = 1 / frame_time  # Convert ms to FPS
+        smoothed_fps = (smoothing_factor * smoothed_fps) + ((1 - smoothing_factor) * current_fps)
+    #    current_lrps  = 1 / no_sleep_frame_time
+    #    smoothed_lrps = (smoothing_factor * smoothed_lrps) + ((1 - smoothing_factor) * current_lrps)
+
+    # Render and display smoothed FPS
+    fps_display1 = font.render(f"FPS: {smoothed_fps:.0f}", True, (255, 55, 255), (0, 0, 0))
+    fps_display2 = font.render(f"Frametime: {frame_time * 1000:.1f}",
+                               True, (255, 255, 55), (0, 0, 0))
+    fps_display3 = font.render(f"Logic/Rendering Frametime: {no_sleep_frame_time * 1000:.1f}",
+                               True, (255, 255, 55), (0, 0, 0))
+    # fps_display4 = font.render(f"L/R FPS: {smoothed_lrps:.1f}", True, (255, 255, 55), (0, 0, 0))
+    screen.blit(fps_display1, (10, 10))  # Display FPS in the top-left corner
+    screen.blit(fps_display2, (10, 30))
+    screen.blit(fps_display3, (200, 10))
+    # screen.blit(fps_display4, (200, 30))
+    # Refresh display
+    pygame.display.flip()
 
 def main():
-    global no_sleep_frame_time, frame_time, frame_start_time, frame_counter, mouse_pos, smoothed_fps, paused, debug_mode, screen_width, screen_height, smoothed_lrps, max_velocity, acceleration_speed, friction, accumulator
+    global frame_counter, accumulator, input_accumulator, alpha, prev_time, running
     running = True
     while running:
-        dt_real = clock.tick(target_fps) / 1000  # Convert ms to seconds
-        accumulator += dt_real
-        frame_start_time = time.perf_counter()
+        current_time = time.time()
+        dt = current_time - prev_time  # Time passed since the last frame
+        prev_time = current_time
+        accumulator += dt
+        input_accumulator += dt
         frame_counter += 1
+
         # Update (logical) section – for TPS
-        if frame_time >= target_tick_time:  # Run TPS updates
+        while accumulator >= target_tick_time:  # Run TPS updates
+            tick()
+            accumulator -= target_tick_time
 
-            if listening is not False:
-                controls.set_controller_button()
+        while input_accumulator >= target_input_tick_time:  # Run TPS updates
+            input_tick()
+            input_accumulator -= target_input_tick_time
 
-            enemies.move()
-            # Handle input
-            key = pygame.key.get_pressed()
-            if key[pygame.K_UP]:
-                for cross in crosshair.crosshair_list:
-                    cross["size"] += 1
-                if game_state.gamestate_list != 0:
-                    game_state.gamestate_list[0]["reddings"] += 1
-                    menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
-            if key[pygame.K_DOWN]:
-                for cross in crosshair.crosshair_list:
-                    cross["size"] -= 1
-                if game_state.gamestate_list != 0:
-                    game_state.gamestate_list[0]["reddings"] -= 1
-                    menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
-            # Update the velocity based on WASD input, while respecting the max_velocity
-            if paused == 2:
-                if key[pygame.K_w] and key[pygame.K_d]:  # Move top-right (up + right)
-                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                elif key[pygame.K_w] and key[pygame.K_a]:  # Move top-left (up + left)
-                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                elif key[pygame.K_s] and key[pygame.K_d]:  # Move bottom-right (down + right)
-                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                elif key[pygame.K_s] and key[pygame.K_a]:  # Move bottom-left (down + left)
-                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                          max_velocity)
-                else:
-                    # Handle standard single axis movement
-                    if key[pygame.K_w]:  # Move up
-                        balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                              max_velocity)
-                        # Apply friction to the other axis (x-axis for vertical movement)
-                        balls[0].velocity[0] *= friction
-                    elif key[pygame.K_s]:  # Move down
-                        balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                              max_velocity)
-                        # Apply friction to the other axis (x-axis for vertical movement)
-                        balls[0].velocity[0] *= friction
-                    elif key[pygame.K_a]:  # Move left
-                        balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                              max_velocity)
-                        # Apply friction to the other axis (y-axis for horizontal movement)
-                        balls[0].velocity[1] *= friction
-                    elif key[pygame.K_d]:  # Move right
-                        balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                              max_velocity)
-                        # Apply friction to the other axis (y-axis for horizontal movement)
-                        balls[0].velocity[1] *= friction
-                if balls[0].x > screen_width:
-                    balls[0].velocity[0] = -balls[0].velocity[0]
-                elif balls[0].y > screen_height:
-                    balls[0].velocity[1] = -balls[0].velocity[1]
-                if not key[pygame.K_SPACE] and not drift:
-                    balls[0].velocity[0] *= friction-0.01
-                    balls[0].velocity[1] *= friction-0.01
-
-                # Apply the final velocities (no need for additional float-to-int conversion)
-                balls[0].x += int(balls[0].velocity[0])
-                balls[0].y += int(balls[0].velocity[1])
-                balls[0].body.position += int(balls[0].velocity[0]), int(balls[0].velocity[1])
-
-            movement_speed = frame_time  # Scale by frame time for consistent movement
-
-            # Directly update the ball's position
-            if paused == 2 or paused == 3:
-                balls[0].body.velocity = (0, 0)
-                if key[pygame.K_w]:
-                    balls[0].body.position = (balls[0].body.position[0], balls[0].body.position[1] - movement_speed)
-                if key[pygame.K_s]:
-                    balls[0].body.position = (balls[0].body.position[0], balls[0].body.position[1] + movement_speed)
-                if key[pygame.K_a]:
-                    balls[0].body.position = (balls[0].body.position[0] - movement_speed, balls[0].body.position[1])
-                if key[pygame.K_d]:
-                    balls[0].body.position = (balls[0].body.position[0] + movement_speed, balls[0].body.position[1])
-            if joystick is not False:
-                controls.button_to_event_tick()
-                update_button_states()
-                mouse_pos_pre = (mouse_pos[0] + controller_input_analogue_list[2][1]*POINTER_SPEED, mouse_pos[1] + controller_input_analogue_list[3][1]*POINTER_SPEED)
-                if 0 <= mouse_pos_pre[0] <= screen_width:
-                    mouse_pos = mouse_pos_pre[0], mouse_pos[1]
-                if 0 <= mouse_pos_pre[1] <= screen_height:
-                    mouse_pos = mouse_pos[0], mouse_pos_pre[1]
-            else:
-                mouse_pos = pygame.mouse.get_pos()
-            # Event handling
-            for event in pygame.event.get():
-
-
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    raise SystemExit
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_0:
-                        menu.change_menu(0)
-                        print('0')
-                    elif event.key == pygame.K_1:
-                        menu.change_menu(1)
-                        print('1')
-                    elif event.key == pygame.K_2:
-                        menu.change_menu(2)
-                        print('2')
-                    elif event.key == pygame.K_F6:
-                        if debug_mode == 3:
-                            debug_mode = 0
-                        elif debug_mode == 0:
-                            debug_mode = 1
-                        elif debug_mode == 1:
-                            debug_mode = 2
-                        elif debug_mode == 2:
-                            debug_mode = 3
-                    elif event.key == pygame.K_k:
-                        if paused == 3:
-                            paused = 0
-                        elif paused == 0:
-                            paused = 1
-                        elif paused == 1:
-                            paused = 2
-                        elif paused == 2:
-                            paused = 3
-                    elif event.key == pygame.K_ESCAPE:
-                        running = False
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    mouse_button_held["Press_Buffer"] = True
-                    if event.button == 1:  # Left mouse button
-                        mouse_button_held[1] = True
-                        menu.check_button_press(mouse_pos, "visual")
-                    elif event.button == 3:  # Right mouse button
-                        mouse_button_held[3] = True
-                        # enemies.create_enemy(mouse_pos[0], mouse_pos[1], 60, 0, (255, 0, 0), (255, 200, 0), 1, 3, 100,
-                        #                      100, 45, None,
-                        #                      False, None)
-                        bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300, True))
-                elif event.type == pygame.MOUSEBUTTONUP:
-                    if event.button == 1:  # Left mouse button
-                        mouse_button_held[1] = False
-                        if mouse_button_held["Press_Buffer"]:
-                            menu.check_button_press(mouse_pos, "logical")
-                            menu.reset_button_states()  # Reset all button states when mouse is released
-                    elif event.button == 3:  # Right mouse button
-                        mouse_button_held[3] = False
-                    mouse_button_held["Press_Buffer"] = False
-                if joystick is not False:
-                    if event.type == pygame.JOYBUTTONDOWN:
-                        print(f"Button {event.button} pressed")
-                        controller_input_button_list[event.button][1] = "pressed"
-                    elif event.type == pygame.JOYBUTTONUP:
-                        if controller_input_button_list[event.button][1] == "pressed":
-                            controller_input_button_list[event.button][1] = "released"
-
-                    # Read axis values (-1 to 1 range)
-                    for i in range(joystick.get_numaxes()):
-                        axis_value = joystick.get_axis(i)
-                        if i == 4 or i == 5:
-                            normalized_trigger = (axis_value + 1) / 2  # Converts -1 to 1 into 0 to 1
-                            if abs(normalized_trigger) > DEADZONE:  # Ignore small movements
-                                #print(f"Trigger {i-3}: {normalized_trigger}")
-                                controller_input_analogue_list[i][1] = normalized_trigger
-                            else:
-                                controller_input_analogue_list[i][1] = 0
-                        else:
-                            if abs(axis_value) > DEADZONE:  # Ignore small movements
-                                #print(f"Axis {i}: {axis_value}")
-                                controller_input_analogue_list[i][1] = axis_value
-                            else:
-                                controller_input_analogue_list[i][1] = 0
-
-                    # # Read D-pad state
-                    # for i in range(joystick.get_numhats()):
-                    #     print(f"D-Pad {i}: {joystick.get_hat(i)}")
-
-                if event.type == pygame.VIDEORESIZE:
-                    screen_width = screen.get_width()
-                    screen_height = screen.get_height()
-            if mouse_button_held[1]:
-                crosshair.shoot()
-            else:
-                crosshair.shoot(visual=True)
-
-        # Render section – for FPS
-        if frame_time >= target_frame_time:  # Run FPS updates
-            # Drawing/rendering updates
-            screen.fill(bg_color)  # Fill the display with a solid color
-            crosshair.move_crosshair(mouse_pos[0], mouse_pos[1])
-            rectangle_instance.draw_lines(None, None, None, None, None, "draw")
-
-            particles.draw()
-            for ball in balls:
-                ball.move()
-                if debug_mode == 0 or debug_mode == 2 or debug_mode == 3:
-                    ball.draw()
-                elif debug_mode == 1:
-                    draw_ball_debug_info(ball)
-
-            enemies.draw()
-            for bomb in bombs:
-                bomb.move()
-                bomb.draw()
-                if bomb.animation_timer >= bomb.animation_frames:
-                    bombs.remove(bomb)  # Removes the first occurrence of the object 'bomb' from the list
-
-            #no_physics_space.debug_draw(draw_options)
-            #space.debug_draw(draw_options)
-            menu.move_switch()
-            menu.draw_menu()
-
-            rectangle_instance.draw_rects(None, None, None, "draw")
-            crosshair.draw()
-
-            # Update the pymunk space (run the physics simulation)
-            handler = space.add_collision_handler(1, 2)
-            handler.begin = ball_hits_enemy
-
-            if paused == 0:  # Unpaused state
-                # Restore saved velocities for all bodies
-                for body, (velocity, angular_velocity) in paused_velocities.items():
-                    body.velocity = velocity
-                    body.angular_velocity = angular_velocity
-                paused_velocities.clear()  # Clear the saved velocities
-                # Normal Pymunk physics step
-                call_both_spaces(frame_time)
-
-
-            elif paused == 1:
-                for body in space.bodies:
-                    if body not in paused_velocities:
-                        # Save the body's current velocities
-                        paused_velocities[body] = (body.velocity, body.angular_velocity)
-                    if body != balls[0].body:  # Only freeze non-player bodies
-                        body.velocity = (0, 0)
-                        body.angular_velocity = 0
-
-                # Perform a minimal physics step for collision detection
-                call_both_spaces(frame_time)
-
-            elif paused == 2:
-                for body, (velocity, angular_velocity) in paused_velocities.items():
-                    body.velocity = velocity
-                    body.angular_velocity = angular_velocity
-                paused_velocities.clear()  # Clear the saved velocities
-                for body in space.bodies:
-                    if body == balls[0].body:  # Only freeze player body
-                        paused_velocities[body] = (body.velocity, body.angular_velocity)
-                        body.velocity = (0, 0)
-                        body.angular_velocity = 0
-
-                # Perform a minimal physics step for collision detection
-                call_both_spaces(frame_time)
-
-            elif paused == 3:
-                for body in space.bodies:
-                    if body not in paused_velocities:
-                        # Save the body's current velocities
-                        paused_velocities[body] = (body.velocity, body.angular_velocity)
-                        body.velocity = (0, 0)
-                        body.angular_velocity = 0
-
-                # Perform a minimal physics step for collision detection
-                call_both_spaces(0)
-
-            if debug_mode == 3:
-                #draw_debug_grid(mouse_pos)
-                pass
-            # Enforce frame delay to match target FPS
-
-            smoothing_factor = 0.5  # Adjust this between 0 and 1; closer to 1 means more smoothing
-
-            # Update smoothed FPS based on time since last frame
-            if frame_time > 0:  # Prevent division by zero
-                current_fps = 1 / frame_time  # Convert ms to FPS
-                smoothed_fps = (smoothing_factor * smoothed_fps) + ((1 - smoothing_factor) * current_fps)
-            #    current_lrps  = 1 / no_sleep_frame_time
-            #    smoothed_lrps = (smoothing_factor * smoothed_lrps) + ((1 - smoothing_factor) * current_lrps)
-
-            # Render and display smoothed FPS
-            fps_display1 = font.render(f"FPS: {smoothed_fps:.0f}", True, (255, 55, 255), (0, 0, 0))
-            fps_display2 = font.render(f"Frametime: {frame_time * 1000:.1f}",
-                                       True, (255, 255, 55), (0, 0, 0))
-            fps_display3 = font.render(f"Logic/Rendering Frametime: {no_sleep_frame_time * 1000:.1f}",
-                                       True, (255, 255, 55), (0, 0, 0))
-            #fps_display4 = font.render(f"L/R FPS: {smoothed_lrps:.1f}", True, (255, 255, 55), (0, 0, 0))
-            screen.blit(fps_display1, (10, 10))  # Display FPS in the top-left corner
-            screen.blit(fps_display2, (10, 30))
-            screen.blit(fps_display3, (200, 10))
-            #screen.blit(fps_display4, (200, 30))
-            # Refresh display
-            pygame.display.flip()
-
-        frame_time = time.perf_counter() - frame_start_time
-        no_sleep_frame_time = frame_time
-
-        if frame_time < target_frame_time:
-            time.sleep(target_frame_time - frame_time)
-            frame_time = time.perf_counter() - frame_start_time
+        alpha = accumulator / target_tick_time
+        render()
+        clock.tick(target_fps)
     pygame.quit()
 
 
