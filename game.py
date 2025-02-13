@@ -14,7 +14,7 @@ import pymunk
 import pymunk.pygame_util
 from pymunk import BB
 from pygame_light2d import LightingEngine, PointLight, Hull, FOREGROUND
-import pygame_light2d
+from PIL import Image
 
 pygame.init()
 pygame.joystick.init()
@@ -110,12 +110,13 @@ mouse_pos = (50, 50)
 max_velocity = 8
 acceleration_speed = 0.8  # Player ball acceleration
 friction = 0.98  # Friction for the perpendicular axis when changing the players' movement direction
-debug_mode = 3
+debug_mode = 0
 collision_mode = 0
 screen_limit_x = screen_width * 2
 screen_limit_y = screen_height * 2
 playing = False
-fps_surface = pygame.Surface((300, 50))
+fps_surface = engine.graphics.make_layer((700, 80))
+fps_surfaces = []
 enemy_image_path = None
 enemy_image = None
 
@@ -123,7 +124,7 @@ target_tps = 20
 target_tick_time = 1 / target_tps
 target_itps = 60
 target_input_tick_time = 1 / target_itps
-target_fps = 60
+target_fps = 120
 target_frame_time = 1 / target_fps
 prev_time = time.time()
 no_sleep_frame_time = 0.05
@@ -136,34 +137,87 @@ tick_counter = 0
 alpha = 0.0  # Interpolation factor
 accumulator = 0.0  # Stores leftover time between physics steps
 input_accumulator = 0.0
-bg_color = (8, 0, 0)
+bg_color = (8/255, 0, 0)
 
+
+def save_texture_as_png(texture: moderngl.Texture, filename: str):
+    """Saves a moderngl.Texture as a PNG file."""
+    width, height = texture.size  # Get texture size
+    data = texture.read()  # Read pixel data (bytes)
+
+    # Convert to numpy array (RGBA format)
+    image = Image.frombytes("RGBA", (width, height), data)
+
+    # Save as PNG
+    image.save(filename, "PNG")
+
+
+def resize_shape(pymunk_space, body, old_shape, new_size):
+    """
+    Resizes a pymunk shape by removing the old shape and creating a new one.
+
+    Parameters:
+    - pymunk_space (pymunk.Space): The physics space where the shape exists.
+    - body (pymunk.Body): The body to which the shape is attached.
+    - old_shape (pymunk.Shape): The shape that needs to be resized.
+    - new_size (float or tuple): The new size for the shape. If a float is given, it assumes a square (new_size, new_size).
+
+    Returns:
+    - pymunk.Shape: The newly created shape with the updated size.
+
+    Notes:
+    - pymunk shapes cannot be resized directly, so a new shape must be created.
+    - The old shape is removed from the space before adding the new shape.
+    - The new shape retains the same body but needs to be re-added to the space.
+    """
+    # Remove the old shape from the physics space
+    pymunk_space.remove(old_shape)
+
+    # Ensure new_size is a tuple (width, height)
+    if isinstance(new_size, (int, float)):
+        new_size = (new_size, new_size)
+
+    # Create a new shape with the updated size
+    new_shape = pymunk.Poly.create_box(body, new_size)
+
+    # Add the new shape to the space
+    pymunk_space.add(new_shape)
+
+    return new_shape
 
 def null_window_position(x=0, y=0):
     user32.MoveWindow(hwnd, x, y, tv_width, tv_height)
 
 
 def switch_to_borderless():
-    global engine
+    global engine, screen_layer, screen_res
     # Do it twice because of a stupid black bar bug on the bottom...
+    screen_res = (tv_width, tv_height)
     for _ in range(2):
-        #render_engine = pygame_light2d.RenderEngine(tv_width, tv_height, noframe=True)
+        engine = LightingEngine(screen_res=screen_res, native_res=screen_res, lightmap_res=screen_res, noframe=True, vsync=True)
+        screen_layer = engine.graphics.make_layer(screen_res)
+        #render_engine = pygame_light2d.RenderEngine(tv_width, tv_height, )
         user32.ShowWindow(hwnd, 1)  # Show the window normally (not minimized)
         null_window_position()  # Reset the position after making it borderless
 
 
 # Function to switch to windowed mode
 def switch_to_windowed():
-    global render_engine
-    render_engine = pygame_light2d.RenderEngine(tv_width, tv_height, resizable=True)
+    global engine, screen_res, screen_layer
+    screen_res = (screen_width, screen_height)
+    engine = LightingEngine(screen_res=screen_res, native_res=screen_res, lightmap_res=screen_res, resizable=True, vsync=True)
+    screen_layer = engine.graphics.make_layer(screen_res)
     null_window_position(0, 1)
     user32.ShowWindow(hwnd, 3)  # Maximize the window when switching
 
 
 # Function to switch to fullscreen mode
 def switch_to_fullscreen():
-    global render_engine
-    render_engine = pygame_light2d.RenderEngine(tv_width, tv_height, fullscreen=True)
+    global engine, screen_res, screen_layer
+    screen_res = (tv_width, tv_height)
+    engine = LightingEngine(screen_res=screen_res, native_res=screen_res, lightmap_res=screen_res,
+                            fullscreen=True, vsync=True)
+    screen_layer = engine.graphics.make_layer(screen_res)
 
 
 def damage_enemy(red_nemesis, damage=1, cross_shoot=None, ball=None):
@@ -196,7 +250,7 @@ def damage_enemy(red_nemesis, damage=1, cross_shoot=None, ball=None):
 
     if red_nemesis["hp"] <= 0:
         remove_enemy(red_nemesis["body"], red_nemesis["shape"], red_nemesis, enemies.red_nemesis_list)
-        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 30, 3, red_nemesis["color"], "damage", 2)
+        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 30, 3, red_nemesis["color"], "damage", 2, 20)
         particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 20, 0.1, (10, 240, 5), "reddings", 0)
 
 
@@ -504,8 +558,14 @@ class Particle:
     def __init__(self):
         self.particle_list = []
         self.precomputed_particles = {}
+        self.direction_map = {
+            "nw": (-1 + random.uniform(-0.5, 0.5), -1 + random.uniform(-0.5, 0.5)),
+            "ne": (1 + random.uniform(-0.5, 0.5), -1 + random.uniform(-0.5, 0.5)),
+            "sw": (-1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5)),
+            "se": (1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5))
+        }
 
-    def create_particle(self, pos_x, pos_y, size, speed, color, label, max_gen):
+    def create_particle(self, pos_x, pos_y, size, speed, color, label, max_gen, max_timer=60):
         """Initialize a new particle system."""
         total_particles = sum(4 ** gen for gen in range(1, max_gen + 1))
         particle_properties = {
@@ -524,7 +584,9 @@ class Particle:
             "current_gen": 1,
             "max_gen": max_gen,
             "timer": 0,
+            "max_timer": max_timer,
             "flip_speed": speed,
+            "start_index": 0,
             "end_index": 4,  # Tracks how many particles are currently active
             "total_particles": total_particles,
             "vel_x": 0,
@@ -573,69 +635,77 @@ class Particle:
 
     def draw(self):
         """Update and render all particles."""
+        particles_to_remove = []
+
+        # Iterate particles in reverse
         for e in range(len(self.particle_list) - 1, -1, -1):  # Iterate in reverse
             particle = self.particle_list[e]
-            if particle["timer"] > 60 * particle["max_gen"]:
-                self.particle_list.pop(e)
-                break
-            # Increment rotation
+            particle_timer = particle["timer"]
+            particle_max_gen = particle["max_gen"]
+            # Particle lifetime check (optimize by collecting removals later)
+            if particle_timer > 60 * particle_max_gen:
+                self.direction_map = {
+                    "nw": (-1 + random.uniform(-0.5, 0.5), -1 + random.uniform(-0.5, 0.5)),
+                    "ne": (1 + random.uniform(-0.5, 0.5), -1 + random.uniform(-0.5, 0.5)),
+                    "sw": (-1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5)),
+                    "se": (1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5))
+                }
+                particles_to_remove.append(e)
+                continue
+
+            # Particle rotation update
             particle["rotation"] = (particle["rotation"] + 1) % 360
             label = particle["label"]
+
             if label == "damage":
-                if particle["timer"] > 60 and particle["current_gen"] < particle["max_gen"]:
-                    particle["current_gen"] += 1
-                    particle["timer"] = 0
+
+                particle_max_timer = particle["max_timer"]
+                particle_current_gen = particle["current_gen"]
+                particle_x = particle["particle_x"]
+                particle_y = particle["particle_y"]
+                if particle_timer > particle_max_timer and particle_current_gen < particle_max_gen:
+                    particle_current_gen += 1
+                    particle_timer = 0
                 else:
-                    particle["timer"] += 1
+                    particle_timer += 1
+                particle["timer"] = particle_timer
+                particle["current_gen"] = particle_current_gen
 
-                # Initialize directions for the current generation
-                if not particle["direction_chosen"][particle["current_gen"] - 1]:
-                    start_index = sum(4 ** gen for gen in range(1, particle["current_gen"]))
-                    end_index = start_index + 4 ** particle["current_gen"]
+
+                # Initialize new directions for the current generation
+                if not particle["direction_chosen"][particle_current_gen - 1]:
+                    start_index = (4 ** particle_current_gen - 4) // 3
+                    end_index = start_index + 4 ** particle_current_gen
                     particle["end_index"] = end_index
-
+                    particle["start_index"] = start_index
                     # Copy positions from the previous generation
-                    prev_start_index = start_index - 4 ** (particle["current_gen"] - 1)
+                    prev_start_index = start_index - 4 ** (particle_current_gen - 1)
                     for i in range(start_index, end_index):
                         source_index = prev_start_index + (i - start_index) // 4
-                        particle["particle_x"].append(particle["particle_x"][source_index])
-                        particle["particle_y"].append(particle["particle_y"][source_index])
+                        particle_x.append(particle_x[source_index])
+                        particle_y.append(particle_y[source_index])
 
-                    # Assign directions and mark generation as initialized
+                    # Assign directions
                     for i in range(start_index, end_index):
                         particle["directions"].append(random.choice(["nw", "ne", "sw", "se"]))
-                        particle["generation"].append(particle["current_gen"])
-                    particle["direction_chosen"][particle["current_gen"] - 1] = True
+                        particle["generation"].append(particle_current_gen)
+                    particle["direction_chosen"][particle_current_gen - 1] = True
 
-                # Move particles based on directions
-                for i in range(len(particle["particle_x"])):
-                    if i >= particle["end_index"]:  # Only process active particles
-                        break
+                for i in range(0, particle["end_index"]):
+                    if particle["generation"][i] == particle_current_gen:
+                        # Move particles
+                        dx, dy = self.direction_map[particle["directions"][i]]
+                        particle_x[i] += dx * particle["speed"]
+                        particle_y[i] += dy * particle["speed"]
 
-                    dx, dy = 0, 0
-                    direction = particle["directions"][i]
-                    if direction == "nw":
-                        dx, dy = -particle["speed"], -particle["speed"]
-                    elif direction == "ne":
-                        dx, dy = particle["speed"], -particle["speed"]
-                    elif direction == "sw":
-                        dx, dy = -particle["speed"], particle["speed"]
-                    elif direction == "se":
-                        dx, dy = particle["speed"], particle["speed"]
-
-                    particle["particle_x"][i] += dx
-                    particle["particle_y"][i] += dy
-
-                # Render particles
-                for i in range(len(particle["particle_x"])):
-                    if i >= particle["end_index"]:  # Only process active particles
-                        break
-                    if particle["generation"][i] == particle["current_gen"]:
+                        # Render particles
                         size_factor = particle["size"] / (2.1 ** particle["generation"][i])
-                        vertices = get_rotated_vertices(particle["particle_x"][i], particle["particle_y"][i],
+                        vertices = get_rotated_vertices(particle_x[i], particle_y[i],
                                                         size_factor, particle["rotation"])
-                        engine.graphics.render_primitive(screen_layer, particle["color"], vertices)
+                        engine.graphics.render_triangles(screen_layer, particle["color"], vertices)
 
+                particle["particle_x"] = particle_x
+                particle["particle_y"] = particle_y
 
             elif label == "reddings":
                 pos_x, pos_y = particle["pos_x"], particle["pos_y"]
@@ -661,8 +731,8 @@ class Particle:
                     if len(game_state.gamestate_list) != 0:
                         game_state.gamestate_list[0]["reddings"] += 1
                         menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
-                    self.particle_list.pop(e)
-                    break
+                    particles_to_remove.append(e)
+
                 # Update position with accumulated force
                 particle["vel_x"] += force_x
                 particle["vel_y"] += force_y
@@ -683,6 +753,9 @@ class Particle:
                 particle_surface = self.precomputed_particles[label][angle]
                 # Blit the particle
                 engine.graphics.render(particle_surface.texture, screen_layer, (pos_x, pos_y))
+
+        for e in particles_to_remove:
+            self.particle_list.pop(e)
 
 
 class Ball:
@@ -804,9 +877,7 @@ class Enemy:
                 shape.friction = 0
                 space.add(enemy_body, shape)
                 if not red_nemesis["rotation_initialized"]:
-                    enemy_body.angular_velocity = red_nemesis["speed"] / 20 if red_nemesis["rotation"] > 0 else - \
-                                                                                                                    red_nemesis[
-                                                                                                                        "speed"] / 20
+                    enemy_body.angular_velocity = red_nemesis["speed"] / 20 if red_nemesis["rotation"] > 0 else - red_nemesis["speed"] / 20
                     red_nemesis["rotation_initialized"] = True
                 red_nemesis["body"] = enemy_body
                 red_nemesis["shape"] = shape
@@ -920,7 +991,7 @@ class Enemy:
 
         if twentieth_frame:
             # Handle wave logic if enemy count drops below the threshold
-            if -1 < len(self.red_nemesis_list) < 50:
+            if 1 < len(self.red_nemesis_list) < 50:
                 collision_mode = 1 - collision_mode  # Toggle collision mode
                 self.wave()
                 print("CREATED ENEMIES")
@@ -971,11 +1042,9 @@ class Enemy:
                                                  animated_size, tenth_size)
             # Debug mode rendering
             if debug_mode == 0:
-                engine.graphics.render_primitive(screen_layer, color, vertices, mode=moderngl.TRIANGLES)
-                engine.graphics.render_primitive(screen_layer, color, [vertices[3], vertices[2], vertices[0], vertices[1]], mode=moderngl.TRIANGLES)
-
-
-
+                v1, v2, v3, v4 = vertices
+                engine.graphics.render_primitive(screen_layer, color, [v2, v3, v1, v4], mode=moderngl.TRIANGLE_STRIP)
+                engine.graphics.render_primitive(screen_layer, edge_color, [v1, v2, v3, v4], mode=moderngl.LINE_LOOP)
             # if debug_mode == 0 or debug_mode == 3:
             #     # Draw filled polygon
             #     render_engine.add_mesh(vertices, color, filled=True)
@@ -1061,9 +1130,7 @@ class Bomb:
                     0)  # Fades to 0
 
             explosion_color = (255, 0, 0, int(alpha_bomb))  # RGBA with variable alpha
-
-            explosion_layer = engine.graphics.make_layer(
-                (self.current_explosion_size * 2, self.current_explosion_size * 2))
+            explosion_layer = engine.graphics.make_layer(size=(int(self.current_explosion_size * 2+1), int(self.current_explosion_size * 2+1)))
 
             engine.graphics.render_circle(explosion_layer, explosion_color,
                                           (self.current_explosion_size, self.current_explosion_size),
@@ -1082,13 +1149,13 @@ class Bomb:
             self.animation_timer += 1
 
     def create_particles(self):
-        num_particles = int(self.max_explosion_size / 2)  # Number of particles based on explosion size
+        num_particles = int(self.max_explosion_size / 4)  # Number of particles based on explosion size
         for _ in range(num_particles):
             pos_x = self.x + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
             pos_y = self.y + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
             size = random.uniform(5, 15)  # Randomized particle size
             speed = random.uniform(1, 5)  # Randomized speed
-            particles.create_particle(pos_x, pos_y, size, speed, self.color, "damage", 1)
+            particles.create_particle(pos_x, pos_y, size, speed, self.color, "damage", 2, 20)
 
 
 class Crosshair:
@@ -1166,8 +1233,8 @@ class Crosshair:
             cross_move["pos_y"] = mouse_pos_y + cross_move["offset"][1]
             cross_move["body"].position = pymunk.Vec2d(cross_move["pos_x"],
                                                        cross_move["pos_y"])
-            for shape in cross_move["body"].shapes:
-                shape.cache_bb()  # Update the bounding box of the shape to match the new position
+
+            cross_move["shape"].cache_bb()  # Update the bounding box of the shape to match the new position
 
     #def change_crosshair_props(self, pos_x, pos_y, size, damage, shooting_speed, color):
 
@@ -1183,15 +1250,17 @@ class Crosshair:
             # Pre-calculate sizes to avoid repeating division
             if cross_draw["size"] != cross_draw["og_size"]:
                 cross_draw["og_size"] = cross_draw["size"]
+                cross_draw["shape"] = resize_shape(no_physics_space, cross_draw["body"], cross_draw["shape"], cross_draw["size"])
+
                 third_size = size * 0.33
                 sixth_size = size * 0.16
                 pos_x_plus_half_size = size + half_size
-                pos_x_minus_half_size = size - half_size
+                pos_x_minus_half_size = half_size
                 pos_y_plus_half_size = size + half_size
-                pos_y_minus_half_size = size - half_size
+                pos_y_minus_half_size = half_size
 
                 # Create a surface to hold all the rectangles
-                cross_draw["surface"] = engine.graphics.make_layer((size, size))
+                cross_draw["surface"] = engine.graphics.make_layer((size*2, size*2))
 
                 # Pre-calculate the rectangles once
                 rects = [
@@ -1205,7 +1274,9 @@ class Crosshair:
                     (pos_x_minus_half_size, pos_y_minus_half_size, sixth_size, third_size)
                 ]
                 # Fill the surface with the rectangles
+                print(size)
                 for rect in rects:
+                    print(rect)
                     engine.graphics.render_rectangle(cross_draw["surface"], color, (rect[0], rect[1]), rect[2], rect[3])
 
             # Blit the surface to the screen
@@ -1232,31 +1303,31 @@ class Menu:
             self.button_list.clear()
             self.switch_list.clear()
 
-        self.create_button(screen_layer.size[0] / 100, 10, 300, 40, (220, 10, 0), (220, 100, 80), 0.5,
+        self.create_button(screen_layer.size[0] / 100, 10, 300, 40, (220/255, 10/255, 0), (220/255, 100/255, 80/255), 0.5,
                            "Reddings: 0",
                            "Reddings BL")
-        self.create_button(0.94 * screen_layer.size[0], 10, 100, 40, (220, 40, 0), (220, 100, 80), 0.5,
+        self.create_button(0.94 * screen_layer.size[0], 10, 100, 40, (220/255, 40/255, 0), (220/255, 100/255, 80/255), 0.5,
                            "Save",
                            "Save BL")
 
         if menu_type == 1:
             # Settings menu
             self.create_button(screen_layer.size[0] / 10, screen_layer.size[0] / 2 - 300, 140, 100,
-                               (220, 10, 0),
-                               (220, 100, 80),
+                               (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255),
                                0.5, "Main menu", "Main menu BL")
             self.create_button(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 300, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Graphics", "Graphics option BL")
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Graphics", "Graphics option BL")
             self.create_button(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 200, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Audio", "Audio option BL")
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Audio", "Audio option BL")
             self.create_button(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 100, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Controls", "Control option BL")
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Controls", "Control option BL")
             self.create_button(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2, 300, 50,
-                               (220, 10, 0),
-                               (220, 100, 80), 0.5, "Miscellaneous", "Misc option BL")
+                               (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Miscellaneous", "Misc option BL")
             print('Settings menu opened')
 
         elif menu_type == 2:
@@ -1266,32 +1337,32 @@ class Menu:
         elif menu_type == 3:
             """Graphics menu"""
             self.create_switch(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 300, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Switch Debug Mode", "debug option BL", debug_mode, 4)
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Switch Debug Mode", "debug option BL", debug_mode, 4)
             self.create_switch(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 100, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Switch Screen Mode", "screen option BL", screen, 3)
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Switch Screen Mode", "screen option BL", None, 3)
             self.create_button(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 200, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Set enemy texture", "enemy texture BL")
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Set enemy texture", "enemy texture BL")
             self.create_button(screen_layer.size[0] / 10, screen_layer.size[1] / 2 - 300, 140, 100,
-                               (220, 10, 0),
-                               (220, 100, 80),
+                               (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255),
                                0.5, "Settings", "Settings BL")
             print("transforming image to scale: " + str(enemy_image_path))
         elif menu_type == 4:
             '''In-Game main menu'''
             self.create_button(screen_layer.size[0] / 2 - 175, screen_layer.size[1] / 2 - 300, 350,
-                               60, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Settings", "Settings BL")
+                               60, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Settings", "Settings BL")
         elif menu_type == 5:
             """Miscellaneous menu"""
             self.create_switch(screen_layer.size[0] / 2 - 150, screen_layer.size[1] / 2 - 300, 300,
-                               50, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Collision Mode", "collision mode BL", collision_mode, 2)
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Collision Mode", "collision mode BL", collision_mode, 2)
             self.create_button(screen_layer.size[0] / 10, screen_layer.size[1] / 2 - 300, 140, 100,
-                               (220, 10, 0),
-                               (220, 100, 80),
+                               (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255),
                                0.5, "Settings", "Settings BL")
         elif menu_type == 6:
             # Button sizes based on screen dimensions
@@ -1377,14 +1448,14 @@ class Menu:
             if crosshair.crosshair_list:
                 for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
                     crosshair.crosshair_list.pop(i + 1)
-            self.create_button(50, 500, 500, 60, (0, 0, 255),
-                               (100, 100, 80), 0.5, "Ball", "Ball BL")
+            self.create_button(50, 500, 500, 60, (0, 0, 255/255),
+                               (100/255, 100/255, 80/255), 0.5, "Ball", "Ball BL")
             self.create_button(screen_layer.size[0] / 2 - 175, screen_layer.size[1] / 2 - 300, 350,
-                               70, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Play", "Play BL")
+                               70, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Play", "Play BL")
             self.create_button(screen_layer.size[0] / 2 - 175, screen_layer.size[1] / 2 - 200, 350,
-                               60, (220, 10, 0),
-                               (220, 100, 80), 0.5, "Settings", "Settings BL")
+                               60, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Settings", "Settings BL")
             self.create_button(screen_layer.size[0] / 2 - 175, 50, 350, 60, bg_color,
                                bg_color, 0.5, "Hello there " + str(user_name) + "!", "Username BL")
             paused = 0
@@ -1555,7 +1626,7 @@ class Menu:
             # Use the best font size to render the final surface
             text_font = pygame.font.Font(None, font_size)
             text_surface = text_font.render(text, False, (255, 255, 255)).convert()
-            text_pos = (center_x, center_y)
+            text_pos = text_surface.get_rect(center=(center_x, center_y)).topleft
             text_texture = engine.graphics.surface_to_texture(text_surface)
             # Cache the rendered text surface and rect
             self.font_cache[cache_key] = (text_texture, text_pos)
@@ -1567,8 +1638,8 @@ class Menu:
         # Iterate over the list of buttons and draw each one
         for button_props in self.button_list:
             width, height = button_props["width"], button_props["height"]
+            half_width, half_height = width // 2, height // 2
             if button_props["button_label"] == "Ball BL":
-                half_width, half_height = width / 2, height / 2
                 button_props["pos_x"] = balls[0].body.position[0] - half_width
                 button_props["pos_y"] = balls[0].body.position[1] - half_height + 100
                 button_props["body"].position = pymunk.Vec2d(button_props["pos_x"] + half_width,
@@ -1587,22 +1658,24 @@ class Menu:
                 self.shadow_movement = 2
 
             if not button_props["button_texture"] == button_props["previous_texture"] or button_props["button_texture"] is None:
-                button_props["button_texture"] = engine.graphics.make_layer((width, height))
-                engine.graphics.render_rectangle(button_props["button_texture"], color2, (pos_x - 6, pos_y - 6),
+                button_props["button_texture"] = engine.graphics.make_layer((width*2, height*2))
+                engine.graphics.render_rectangle(button_props["button_texture"], color2, (- 6, - 6),
                                                      width + 12, height + 12)
                 engine.graphics.render_rectangle(button_props["button_texture"],
                                                      self.calculate_shadow_color(color2, shadow_factor),
-                                                     (pos_x + self.shadow_movement, pos_y + self.shadow_movement),
+                                                     (self.shadow_movement, self.shadow_movement),
                                                      width + 2, height + 2)
                 engine.graphics.render_rectangle(button_props["button_texture"], color1,
-                                                     (pos_x - self.shadow_movement, pos_y - self.shadow_movement),
+                                                     (self.shadow_movement,  self.shadow_movement),
                                                      width, height)
 
                 button_props["previous_texture"] = button_props["button_texture"]
+                save_texture_as_png(button_props["button_texture"].texture, "outputtt.png")
 
-            engine.graphics.render(button_props["button_texture"].texture, screen_layer)
+            engine.graphics.render(button_props["button_texture"].texture, screen_layer, (pos_x, pos_y))
 
-            self.draw_text(label, pos_x - self.shadow_movement + width // 2, pos_y - self.shadow_movement + height // 2,
+
+            self.draw_text(label, pos_x - self.shadow_movement + half_width, pos_y - self.shadow_movement + half_height,
                            width, height)
 
         for i in range(len(self.switch_list)):
@@ -1716,7 +1789,6 @@ class Menu:
             debug_mode = switch_option
             #print("Debug mode is: " + str(debug_mode))
         elif bl == "screen option BL":
-            global screen
             options = [
                 "Borderless Window",
                 "Window",
@@ -2140,7 +2212,7 @@ class Upgrade:
             for upgrade2 in self.upgrades_list:
                 if upgrade1 is not upgrade2 and upgrade1["effect"]["uid"] in upgrade2["effect"]["connection_list"]:
                     pos2 = (upgrade2["pos_x"], upgrade2["pos_y"])
-                    rectangle_instance.draw_lines(screen, (0, 255, 0), pos1, pos2, 4, "add")
+                    rectangle_instance.draw_lines(screen_layer, (0, 255, 0), pos1, pos2, 4, "add")
 
     # def position_upgrades(self):
     #     central_upgrade = next((u for u in self.upgrades_list if u["effect"]["uid"] == 0), None)
@@ -2195,15 +2267,11 @@ class Lighting:
         self.light_radius = 1000
 
         # Set the ambient light to 50%
-        engine.set_ambient(bg_color[0], bg_color[1], bg_color[2], 128)
+        engine.set_ambient(int(255*bg_color[0]), int(255*bg_color[1]), int(255*bg_color[2]), 128)
         # Create and add a light
         self.light = PointLight(position=(0, 0), power=0.8, radius=self.light_radius)
         self.light.set_color(100, 100, 100, 255)
         engine.lights.append(self.light)
-
-        # Create and add a hull
-
-
 
     def draw_lighting(self):
         global mouse_pos, engine, obstacles
@@ -2213,9 +2281,7 @@ class Lighting:
         for obstacle in obstacles:
             obstacles.sort(key=lambda obs: obstacle[1])
         obstacles = obstacles[:40]
-        print(len(obstacles))
         for vertices in obstacles:
-            print(vertices)
             hull = Hull(vertices[0])
             engine.hulls.append(hull)
 
@@ -2446,10 +2512,10 @@ def input_tick():
         crosshair.shoot(visual=True)
 
 
-def render():
-    global smoothed_fps, mouse_pos
+def render(dt):
+    global smoothed_fps, mouse_pos, frame_time
     # Render section – for FPS
-
+    frame_time = dt
     # Drawing/rendering updates
     engine.clear(255, 255, 255)
 
@@ -2549,17 +2615,19 @@ def render():
     #    smoothed_lrps = (smoothing_factor * smoothed_lrps) + ((1 - smoothing_factor) * current_lrps)
 
     # Render and display smoothed FPS
-    fps_display1 = font.render(f"FPS: {smoothed_fps:.0f}", True, (255, 55, 255), (0, 0, 0))
+    fps_display1 = font.render(f"FPS: {smoothed_fps:.0f}", True, (255, 55, 255), (0, 0, 0, 0))
     fps_display2 = font.render(f"Frametime: {frame_time * 1000:.1f}",
-                               True, (255, 255, 55), (0, 0, 0))
-    fps_display3 = font.render(f"Logic/Rendering Frametime: {no_sleep_frame_time * 1000:.1f}",
-                               True, (255, 255, 55), (0, 0, 0))
+                               True, (255, 255, 55), (0, 0, 0, 0))
+    fps_display3 = font.render(f"Target TPS: {target_tps:.0f}",
+                               True, (255, 255, 55), (0, 0, 0, 0))
     # fps_display4 = font.render(f"L/R FPS: {smoothed_lrps:.1f}", True, (255, 255, 55), (0, 0, 0))
-    fps_surface.blit(fps_display1, (10, 10))  # Display FPS in the top-left corner
-    fps_surface.blit(fps_display2, (10, 30))
-    fps_surface.blit(fps_display3, (200, 10))
-    fps_texture = engine.graphics.surface_to_texture(fps_surface)
-    engine.graphics.render(fps_texture, screen_layer)
+    fps_surfaces.clear()
+    fps_surfaces.append((fps_display1, (10, 10)))
+    fps_surfaces.append((fps_display2, (10, 30)))
+    fps_surfaces.append((fps_display3, (100, 10)))
+    for fps_surf in fps_surfaces:
+        fps_texture = engine.graphics.surface_to_texture(fps_surf[0])
+        engine.graphics.render(fps_texture, screen_layer, fps_surf[1])
     # screen.blit(fps_display4, (200, 30))
 
     # Refresh display
@@ -2588,7 +2656,7 @@ def main():
             input_accumulator -= target_input_tick_time
 
         alpha = accumulator / target_tick_time
-        render()
+        render(dt)
         clock.tick(target_fps)
     pygame.quit()
 
