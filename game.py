@@ -124,7 +124,7 @@ target_tps = 20
 target_tick_time = 1 / target_tps
 target_itps = 60
 target_input_tick_time = 1 / target_itps
-target_fps = 120
+target_fps = 240
 target_frame_time = 1 / target_fps
 prev_time = time.time()
 no_sleep_frame_time = 0.05
@@ -145,7 +145,7 @@ def save_texture_as_png(texture: moderngl.Texture, filename: str):
     width, height = texture.size  # Get texture size
     data = texture.read()  # Read pixel data (bytes)
 
-    # Convert to numpy array (RGBA format)
+    # Convert to a numpy array (RGBA format)
     image = Image.frombytes("RGBA", (width, height), data)
 
     # Save as PNG
@@ -411,6 +411,11 @@ def clamp_velocity(velocity, min_value, max_value):
     return max(min_value, min(max_value, velocity))
 
 
+def convert_color(color):
+    conv_color = tuple(c / 255.0 for c in color)
+    return conv_color
+
+
 class GameState:
     def __init__(self):
         # Use a fixed filename in the current working directory
@@ -493,7 +498,7 @@ class GameState:
             debug_mode = int(gamestate_graphics.get("debug_mode", 0))
             enemy_image_path = gamestate_graphics.get("enemy_image_path")
             if enemy_image_path:
-                print("Loaded enemy image path from XML.")
+                print(f"Loaded enemy image path from XML. {enemy_image_path}")
                 enemy_image = pygame.image.load(enemy_image_path).convert_alpha()
             else:
                 enemy_image = None
@@ -805,10 +810,45 @@ class Ball:
         engine.graphics.render_circle(screen_layer, self.color,
                                       (int(self.body.position.x), int(self.body.position.y)), self.radius)
 
+enemy_draw_counter = 0
 
 class Enemy:
     def __init__(self):
         self.red_nemesis_list = []
+        self.enemy_saved_textures = {}
+        self.max_enemy_size = 100
+        self.looks_ids = []
+        self.rendering_groups = [] # List of groups of enemies to render.
+            # Group is a tuple consisting of two vertices lists, inside and outline.
+
+    def change_enemy_color(self, red_nemesis, color):
+        # Convert colors to the 0-1 range
+        color = convert_color(color)
+        edge_color = convert_color(red_nemesis["edge_color"])
+
+        def create_looks_group(looks_id):
+            """Helper function to create a new looks group."""
+            red_nemesis["looks_id"] = looks_id
+            print(red_nemesis["looks_id"], color)
+            self.looks_ids.append((looks_id, color, edge_color))
+            self.rendering_groups.append(
+                ([], [], (color, edge_color)))  # Add new rendering group
+
+        # If there's no looks_id yet, or the list is empty, create the first looks group
+        if red_nemesis["looks_id"] is None and len(self.looks_ids) == 0:
+            create_looks_group(0)
+            return  # Exit after creating the first group
+
+        # Check if the current look_id matches the color and edge_color, or create a new one
+        for i, (look_id, look_color, look_edge_color) in enumerate(self.looks_ids):
+            if look_color == color and look_edge_color == edge_color:
+                red_nemesis["looks_id"] = look_id
+                break
+            elif i == len(self.looks_ids) - 1:
+                create_looks_group(look_id + 1)
+
+        # Update the nemesis color
+        red_nemesis["color"] = color
 
     def choose_random_props(self):
         margin = 100
@@ -838,8 +878,10 @@ class Enemy:
                     y = random.randint(-margin, screen_height + margin)
                 if red_nemesis["pos_x"] is None:
                     red_nemesis["pos_x"] = x
+                    red_nemesis["prev_pos_x"] = x
                 if red_nemesis["pos_y"] is None:
                     red_nemesis["pos_y"] = y
+                    red_nemesis["prev_pos_y"] = y
 
                 red_nemesis["surface"] = pygame.Surface((red_nemesis["size"], red_nemesis["size"]), pygame.SRCALPHA)
 
@@ -882,11 +924,12 @@ class Enemy:
                 red_nemesis["body"] = enemy_body
                 red_nemesis["shape"] = shape
                 red_nemesis["shape"].collision_type = 2
+                self.change_enemy_color(red_nemesis, red_nemesis["og_color"])
                 red_nemesis["random_props_chosen"] = True
 
     def wave(self):
         #if self.red_nemesis_list: self.red_nemesis_list.clear()
-        enemy_amount = rand.randint(20, 80)
+        enemy_amount = rand.randint(1, 60)
         for _ in range(enemy_amount):
             self.create_enemy(None, None, None, None, (255, 0, 0), (255, 200, 0), "random_guy",
                               30, 100, 100, None, None, False, None)
@@ -928,6 +971,7 @@ class Enemy:
             "random_props_chosen": False,
             "surface": None,
             "image": None,
+            "looks_id": None,
             "previous_framecount": 0
         }
 
@@ -991,18 +1035,19 @@ class Enemy:
 
         if twentieth_frame:
             # Handle wave logic if enemy count drops below the threshold
-            if 1 < len(self.red_nemesis_list) < 50:
+            if 1 <= len(self.red_nemesis_list) < 200:
                 collision_mode = 1 - collision_mode  # Toggle collision mode
                 self.wave()
                 print("CREATED ENEMIES")
 
     def draw(self, alpha_blend):
         """Renders enemies with interpolation, called every frame."""
-        global debug_mode, enemy_image, enemy_image_path
+        global debug_mode, enemy_image, enemy_image_path, enemy_draw_counter
         # if len(self.red_nemesis_list) != 0:
         #      print("previous position x: ", self.red_nemesis_list[0]["prev_pos_x"], "current position x: ", self.red_nemesis_list[0]["pos_x"], "Alpha blend: ",alpha_blend)
         #print(alpha, "accu: ", accumulator, target_tick_time)
         obstacles.clear()
+        enemies_to_render = []
 
         for red_nemesis in self.red_nemesis_list:
             # Interpolate position & rotation
@@ -1015,14 +1060,13 @@ class Enemy:
             #     print("1. rotation, alpha_blend: ", rotation, alpha_blend)
             #     print("Position x after calculation: ", pos_x, "Frame: ", frame_counter)
             size = red_nemesis["size"]
-            color = red_nemesis["color"]
+
             hp = red_nemesis["hp"]
             max_hp = red_nemesis["max_hp"]
             vertices = get_rotated_vertices(pos_x, pos_y, size, rotation)
             distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
             if distance_to_mouse < lighting_class.light_radius:
                 obstacles.append((vertices, distance_to_mouse))
-            edge_color = red_nemesis["edge_color"]
 
             # Draw HP bar if the enemy was attacked
             if red_nemesis["is_attacked"]:
@@ -1042,35 +1086,50 @@ class Enemy:
                                                  animated_size, tenth_size)
             # Debug mode rendering
             if debug_mode == 0:
-                v1, v2, v3, v4 = vertices
-                engine.graphics.render_primitive(screen_layer, color, [v2, v3, v1, v4], mode=moderngl.TRIANGLE_STRIP)
-                engine.graphics.render_primitive(screen_layer, edge_color, [v1, v2, v3, v4], mode=moderngl.LINE_LOOP)
-            # if debug_mode == 0 or debug_mode == 3:
-            #     # Draw filled polygon
-            #     render_engine.add_mesh(vertices, color, filled=True)
-            #     # Draw polygon edges
-            #     render_engine.add_mesh(vertices, edge_color, filled=False, thickness=3)
-            #
-            # if debug_mode == 2:
-            #     if enemy_image is not None:
-            #         red_nemesis["image"] = pygame.transform.scale(enemy_image, (size, size))
-            #
-            #     if red_nemesis["image"] is not None:
-            #         if int(rotation) != int(red_nemesis.get("last_rotation", 0)):
-            #             red_nemesis["last_rotation"] = rotation
-            #             red_nemesis["rotated_surface"] = pygame.transform.rotate(
-            #                 red_nemesis["image"], rotation
-            #             )
-            #
-            #         # Convert to texture and add to render engine
-            #         texture = render_engine.surface_to_texture(red_nemesis["rotated_surface"])
-            #         render_engine.add_texture(texture, (pos_x, pos_y), rotation=rotation, scale=1.0)
-            #
-            #     else:
-            #         # Draw a rectangle if no image exists
-            #
-            #         render_engine.add_mesh(vertices, (0, 25, 255), filled=True)
+                edge_color = red_nemesis["edge_color"]
+                color = red_nemesis["color"]
+                enemies_to_render.append((color, edge_color, vertices, red_nemesis["looks_id"]))
+            if debug_mode == 1:
+                # Literally do nothing (Lighting only mode)
+                pass
 
+            if debug_mode == 2:
+                image = red_nemesis["image"]
+                if enemy_image_path is not None and image is None:
+                    image = engine.graphics.load_texture(str(enemy_image_path))
+                    red_nemesis["image"] = image
+                if image is not None:
+                    print(image)
+                    engine.graphics.render(image, screen_layer,(pos_x-size, pos_y-size), (0.1, 0.1), rotation)
+                else:
+                    # Draw a rectangle if no image exists
+                    v1, v2, v3, v4 = vertices
+                    engine.graphics.render_primitive(screen_layer, (0, 25, 255), [v2, v3, v1, v4], mode=moderngl.TRIANGLE_STRIP)
+
+
+        for enemy in enemies_to_render:
+            looks_id = enemy[3]
+            v1, v2, v3, v4 = enemy[2]
+            self.rendering_groups[looks_id][0].extend([v1, v2, v3, v1, v3, v4])
+            self.rendering_groups[looks_id][1].extend([v1, v2, v2, v3, v3, v4, v4, v1])
+
+        engine.graphics.ctx.line_width = 3
+        for group_id in range(len(self.rendering_groups)):
+            group_list = self.rendering_groups[group_id]
+
+            filled_vertices = group_list[0]
+            outline_vertices = group_list[1]
+            color = group_list[2][0]
+            edge_color = group_list[2][1]
+
+            # Now render everything in one call per mode per group (looks_id)
+            if len(filled_vertices) != 0:
+
+                engine.graphics.render_primitive(screen_layer, color, filled_vertices, mode=moderngl.TRIANGLES)
+                engine.graphics.render_primitive(screen_layer, edge_color, outline_vertices, mode=moderngl.LINES)
+
+                filled_vertices.clear()
+                outline_vertices.clear()
 
 class Bomb:
     def __init__(self, x, y, size, bomb_velocity, color, explosion_time, primed):
@@ -1216,13 +1275,13 @@ class Crosshair:
                         cross_collision["shape"],
                         red_nemesis["shape"]):
                     if visual is False:
-                        red_nemesis["color"] = tuple(int(c * 0.5) for c in red_nemesis["og_color"])
+                        enemies.change_enemy_color(red_nemesis, tuple(int(c * 0.5) for c in red_nemesis["og_color"]))
                         if cross_shoot["shot_allowed"]:
                             damage_enemy(red_nemesis, 1, cross_shoot)
                     else:
-                        red_nemesis["color"] = tuple(int(c * 0.5) for c in red_nemesis["og_color"])
+                        enemies.change_enemy_color(red_nemesis, tuple(int(c * 0.5) for c in red_nemesis["og_color"]))
                 else:
-                    red_nemesis["color"] = red_nemesis["og_color"]
+                    enemies.change_enemy_color(red_nemesis, red_nemesis["og_color"])
         if cross_shoot["enemy_hit"]:
             cross_shoot["shot_allowed"] = False
             cross_shoot["enemy_hit"] = False
@@ -1274,9 +1333,7 @@ class Crosshair:
                     (pos_x_minus_half_size, pos_y_minus_half_size, sixth_size, third_size)
                 ]
                 # Fill the surface with the rectangles
-                print(size)
                 for rect in rects:
-                    print(rect)
                     engine.graphics.render_rectangle(cross_draw["surface"], color, (rect[0], rect[1]), rect[2], rect[3])
 
             # Blit the surface to the screen
@@ -1670,7 +1727,7 @@ class Menu:
                                                      width, height)
 
                 button_props["previous_texture"] = button_props["button_texture"]
-                save_texture_as_png(button_props["button_texture"].texture, "outputtt.png")
+                save_texture_as_png(button_props["button_texture"].texture, "outputted.png")
 
             engine.graphics.render(button_props["button_texture"].texture, screen_layer, (pos_x, pos_y))
 
@@ -2340,60 +2397,6 @@ def tick():
             game_state.gamestate_list[0]["reddings"] -= 1
             menu.change_label("Reddings: " + str(game_state.gamestate_list[0]["reddings"]), "Reddings BL")
     # Update the velocity based on WASD input, while respecting the max_velocity
-    if paused == 2 or paused == 3:
-        if key[pygame.K_w] and key[pygame.K_d]:  # Move top-right (up + right)
-            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                  max_velocity)
-            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                  max_velocity)
-        elif key[pygame.K_w] and key[pygame.K_a]:  # Move top-left (up + left)
-            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                  max_velocity)
-            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                  max_velocity)
-        elif key[pygame.K_s] and key[pygame.K_d]:  # Move bottom-right (down + right)
-            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                  max_velocity)
-            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                  max_velocity)
-        elif key[pygame.K_s] and key[pygame.K_a]:  # Move bottom-left (down + left)
-            balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                  max_velocity)
-            balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                  max_velocity)
-        else:
-            # Handle standard single axis movement
-            if key[pygame.K_w]:  # Move up
-                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
-                                                      max_velocity)
-                # Apply friction to the other axis (x-axis for vertical movement)
-                balls[0].velocity[0] *= friction
-            elif key[pygame.K_s]:  # Move down
-                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
-                                                      max_velocity)
-                # Apply friction to the other axis (x-axis for vertical movement)
-                balls[0].velocity[0] *= friction
-            elif key[pygame.K_a]:  # Move left
-                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
-                                                      max_velocity)
-                # Apply friction to the other axis (y-axis for horizontal movement)
-                balls[0].velocity[1] *= friction
-            elif key[pygame.K_d]:  # Move right
-                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
-                                                      max_velocity)
-                # Apply friction to the other axis (y-axis for horizontal movement)
-                balls[0].velocity[1] *= friction
-        if balls[0].x > screen_width:
-            balls[0].velocity[0] = -balls[0].velocity[0]
-        elif balls[0].y > screen_height:
-            balls[0].velocity[1] = -balls[0].velocity[1]
-        if not key[pygame.K_SPACE] and not drift:
-            balls[0].velocity[0] *= friction - 0.01
-            balls[0].velocity[1] *= friction - 0.01
-        # Apply the final velocities (no need for additional float-to-int conversion)
-        balls[0].x += int(balls[0].velocity[0])
-        balls[0].y += int(balls[0].velocity[1])
-        balls[0].body.position += int(balls[0].velocity[0]), int(balls[0].velocity[1])
 
     enemies.move()
 
@@ -2402,6 +2405,7 @@ def input_tick():
     global paused, screen_width, screen_height, mouse_pos, debug_mode, running, screen_limit_x, screen_limit_y
     # Handle input
 
+    key = pygame.key.get_pressed()
     if joystick is not False:
         controls.button_to_event_tick()
         update_button_states()
@@ -2413,6 +2417,60 @@ def input_tick():
             mouse_pos = mouse_pos[0], mouse_pos_pre[1]
     else:
         mouse_pos = pygame.mouse.get_pos()
+        if paused == 2 or paused == 3:
+            if key[pygame.K_w] and key[pygame.K_d]:  # Move top-right (up + right)
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+            elif key[pygame.K_w] and key[pygame.K_a]:  # Move top-left (up + left)
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+            elif key[pygame.K_s] and key[pygame.K_d]:  # Move bottom-right (down + right)
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+            elif key[pygame.K_s] and key[pygame.K_a]:  # Move bottom-left (down + left)
+                balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                      max_velocity)
+                balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                      max_velocity)
+            else:
+                # Handle standard single axis movement
+                if key[pygame.K_w]:  # Move up
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (x-axis for vertical movement)
+                    balls[0].velocity[0] *= friction
+                elif key[pygame.K_s]:  # Move down
+                    balls[0].velocity[1] = clamp_velocity(balls[0].velocity[1] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (x-axis for vertical movement)
+                    balls[0].velocity[0] *= friction
+                elif key[pygame.K_a]:  # Move left
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] - acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (y-axis for horizontal movement)
+                    balls[0].velocity[1] *= friction
+                elif key[pygame.K_d]:  # Move right
+                    balls[0].velocity[0] = clamp_velocity(balls[0].velocity[0] + acceleration_speed, -max_velocity,
+                                                          max_velocity)
+                    # Apply friction to the other axis (y-axis for horizontal movement)
+                    balls[0].velocity[1] *= friction
+            if balls[0].x > screen_width:
+                balls[0].velocity[0] = -balls[0].velocity[0]
+            elif balls[0].y > screen_height:
+                balls[0].velocity[1] = -balls[0].velocity[1]
+            if not key[pygame.K_SPACE] and not drift:
+                balls[0].velocity[0] *= friction - 0.01
+                balls[0].velocity[1] *= friction - 0.01
+            # Apply the final velocities (no need for additional float-to-int conversion)
+            balls[0].x += int(balls[0].velocity[0])
+            balls[0].y += int(balls[0].velocity[1])
+            balls[0].body.position += int(balls[0].velocity[0]), int(balls[0].velocity[1])
 
     # Event handling
     for event in pygame.event.get():
