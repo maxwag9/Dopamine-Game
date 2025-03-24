@@ -9,6 +9,7 @@ from tkinter.filedialog import askopenfilename
 from xml.dom import minidom
 from collections import defaultdict
 import moderngl
+import numpy as np
 import pygame
 import pymunk
 import pymunk.pygame_util
@@ -91,6 +92,7 @@ ENEMY_COLLISION_TYPE = 2
 rotation_cache = {}
 paused_velocities = {}
 obstacles = []
+obstacles_menu = []
 light_mask = None
 paused = 0
 running = True
@@ -250,8 +252,8 @@ def damage_enemy(red_nemesis, damage=1, cross_shoot=None, ball=None):
 
     if red_nemesis["hp"] <= 0:
         remove_enemy(red_nemesis["body"], red_nemesis["shape"], red_nemesis, enemies.red_nemesis_list)
-        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 30, 3, red_nemesis["color"], "damage", 2, 20)
-        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 20, 0.1, (10, 240, 5), "reddings", 0)
+        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 50, 1, red_nemesis["color"], "damage", 3, 60)
+        particles.create_particle(red_nemesis["pos_x"], red_nemesis["pos_y"], 25, 0.1, (10, 240, 5), "reddings", 0)
 
 
 def remove_enemy(enemy_body, shape, red_nemesis, red_nemesis_list):
@@ -378,6 +380,54 @@ def check_aabb_to_point_collision(obj_shape, point, point_radius=0):
 def create_bb(position, size):
     return BB(position[0], position[1], position[0] + size[0], position[1] + size[1])
 
+
+def vertices_from_aabb(position, size):
+    """
+    Generates the vertices for a rectangle based on the given position and size.
+
+    :param position: tuple (x, y), position of the top-left corner of the rectangle.
+    :param size: tuple (width, height), size of the rectangle.
+    :return: list of vertices (as tuples of coordinates).
+    """
+    x, y = position
+    width, height = size
+
+    # Define the vertices of the rectangle (counter-clockwise order)
+    vertices = [
+        (x, y),  # top-left
+        (x + width, y),  # top-right
+        (x + width, y + height),  # bottom-right
+        (x, y + height)  # bottom-left
+    ]
+
+    return vertices
+
+
+def vertices_from_ball(center, radius, num_vertices, angle1=0, angle2=2 * math.pi):
+    """
+    Generate the outer vertices approximating a circle (ball) given a center, radius, and number of vertices.
+
+    Args:
+    - center: tuple (x, y), the position of the center of the ball
+    - radius: float, the radius of the ball
+    - num_vertices: int, the number of vertices to approximate the circle
+    - angle1: float, starting angle in radians (default is 0)
+    - angle2: float, ending angle in radians (default is 2*pi, full circle)
+
+    Returns:
+    - List of vertices (x, y) approximating the circle
+    """
+    # Initialize vertices list with the center
+    vertices = [center]
+
+    # Generate the vertices by evenly distributing angles between angle1 and angle2
+    for angle in np.linspace(angle1, angle2, num_vertices + 1):
+        # Calculate the x and y coordinates for each vertex using polar-to-cartesian conversion
+        x = center[0] + radius * math.cos(angle)
+        y = center[1] + radius * math.sin(angle)
+        vertices.append((x, y))
+
+    return vertices
 
 def draw_ball_debug_info(a_ball):
     engine.graphics.render_circle(screen_layer, (255, 0, 0),
@@ -561,6 +611,8 @@ class Rectangles:
 
 class Particle:
     def __init__(self):
+        self.rendering_groups = []
+        self.looks_ids = []
         self.particle_list = []
         self.precomputed_particles = {}
         self.direction_map = {
@@ -569,6 +621,34 @@ class Particle:
             "sw": (-1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5)),
             "se": (1 + random.uniform(-0.5, 0.5), 1 + random.uniform(-0.5, 0.5))
         }
+
+    def change_particle_color(self, particle, color):
+        # Convert colors to the 0-1 range
+        #color = convert_color(color)
+
+        def create_looks_group(looks_id):
+            """Helper function to create a new looks group."""
+            particle["looks_id"] = looks_id
+            print("partikel: ", particle["looks_id"], color)
+            self.looks_ids.append((looks_id, color))
+            self.rendering_groups.append(
+                ([], color))  # Add new rendering group
+
+        # If there's no looks_id yet, or the list is empty, create the first looks group
+        if particle["looks_id"] is None and len(self.looks_ids) == 0:
+            create_looks_group(0)
+            return  # Exit after creating the first group
+
+        # Check if the current look_id matches the color, or create a new one
+        for i, (look_id, look_color) in enumerate(self.looks_ids):
+            if look_color == color:
+                particle["looks_id"] = look_id
+                break
+            elif i == len(self.looks_ids) - 1:
+                create_looks_group(look_id + 1)
+
+        # Update the nemesis color
+        particle["color"] = color
 
     def create_particle(self, pos_x, pos_y, size, speed, color, label, max_gen, max_timer=60):
         """Initialize a new particle system."""
@@ -595,9 +675,12 @@ class Particle:
             "end_index": 4,  # Tracks how many particles are currently active
             "total_particles": total_particles,
             "vel_x": 0,
-            "vel_y": 0
+            "vel_y": 0,
+            "looks_id": None
         }
         self.particle_list.append(particle_properties)
+        particle = self.particle_list[-1]
+        self.change_particle_color(particle, color)
 
     def precompute_particles(self, particle_type, size, color):
         """
@@ -638,9 +721,13 @@ class Particle:
 
                 self.precomputed_particles[particle_type][angle] = particle_surface
 
+#    def move(self):
+
+
     def draw(self):
         """Update and render all particles."""
         particles_to_remove = []
+        damage_particles_to_render = []
 
         # Iterate particles in reverse
         for e in range(len(self.particle_list) - 1, -1, -1):  # Iterate in reverse
@@ -707,7 +794,7 @@ class Particle:
                         size_factor = particle["size"] / (2.1 ** particle["generation"][i])
                         vertices = get_rotated_vertices(particle_x[i], particle_y[i],
                                                         size_factor, particle["rotation"])
-                        engine.graphics.render_triangles(screen_layer, particle["color"], vertices)
+                        damage_particles_to_render.append((vertices[:3], particle["looks_id"]))
 
                 particle["particle_x"] = particle_x
                 particle["particle_y"] = particle_y
@@ -722,7 +809,7 @@ class Particle:
                 # Compute gravitational force from all crosshairs
                 crosshairs = crosshair.crosshair_list[0]
                 cross_x, cross_y = crosshairs["pos_x"], crosshairs["pos_y"]
-                distance = get_distance(pos_x, pos_y, cross_x, cross_y) - 10
+                distance = get_distance(pos_x, pos_y, cross_x, cross_y) - 20
 
                 # Avoid division by zero for very small distances
                 if distance > size:
@@ -759,8 +846,27 @@ class Particle:
                 # Blit the particle
                 engine.graphics.render(particle_surface.texture, screen_layer, (pos_x, pos_y))
 
-        for e in particles_to_remove:
-            self.particle_list.pop(e)
+        #print(len(damage_particles_to_render), len(self.particle_list))
+
+        # Optimized first loop
+        for particle in damage_particles_to_render:
+            looks_id = particle[1]
+            vertices = particle[0]
+            self.rendering_groups[looks_id][0].extend(vertices)  # Directly extend with all 3 vertices
+
+        # Optimized second loop: caching repeated list access and removing the print call (if not needed)
+        for group_id, group_list in enumerate(self.rendering_groups):  # Use enumerate for efficient indexing
+            filled_vertices = group_list[0]
+            color = group_list[1]
+
+            if filled_vertices:  # Check if not empty
+                # Directly render if the list is not empty
+                engine.graphics.render_primitive(screen_layer, color, filled_vertices, mode=moderngl.TRIANGLES)
+                filled_vertices.clear()  # Clear after rendering
+
+        # Optimized third loop: popping from a list using indices directly
+        # (assuming `particles_to_remove` contains indices of elements in the `self.particle_list`)
+        self.particle_list = [particle for i, particle in enumerate(self.particle_list) if i not in particles_to_remove]
 
 
 class Ball:
@@ -804,11 +910,15 @@ class Ball:
                     ball_pos.x, max(0, int(min(ball_pos.y, screen_height))))  # Clamp position inside bounds
         else:
             self.body.velocity = (0, 0)
+        vertices = vertices_from_ball(self.body.position, self.radius, 8)
+        distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
+        # if distance_to_mouse < lighting_class.light_radius:
+        obstacles.append((vertices, distance_to_mouse))
 
     def draw(self):
         # Draw the ball using pygame
         engine.graphics.render_circle(screen_layer, self.color,
-                                      (int(self.body.position.x), int(self.body.position.y)), self.radius)
+                                      (int(self.body.position.x), int(self.body.position.y)), self.radius, num_segments=16)
 
 enemy_draw_counter = 0
 
@@ -1038,7 +1148,7 @@ class Enemy:
             if 1 <= len(self.red_nemesis_list) < 200:
                 collision_mode = 1 - collision_mode  # Toggle collision mode
                 self.wave()
-                print("CREATED ENEMIES")
+                print("CREATED ENEMIES", len(self.red_nemesis_list))
 
     def draw(self, alpha_blend):
         """Renders enemies with interpolation, called every frame."""
@@ -1046,7 +1156,7 @@ class Enemy:
         # if len(self.red_nemesis_list) != 0:
         #      print("previous position x: ", self.red_nemesis_list[0]["prev_pos_x"], "current position x: ", self.red_nemesis_list[0]["pos_x"], "Alpha blend: ",alpha_blend)
         #print(alpha, "accu: ", accumulator, target_tick_time)
-        obstacles.clear()
+
         enemies_to_render = []
 
         for red_nemesis in self.red_nemesis_list:
@@ -1208,7 +1318,7 @@ class Bomb:
             self.animation_timer += 1
 
     def create_particles(self):
-        num_particles = int(self.max_explosion_size / 4)  # Number of particles based on explosion size
+        num_particles = int(self.max_explosion_size / 8)  # Number of particles based on explosion size
         for _ in range(num_particles):
             pos_x = self.x + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
             pos_y = self.y + random.uniform(-self.max_explosion_size / 4, self.max_explosion_size / 4)
@@ -1352,6 +1462,7 @@ class Menu:
 
     def change_menu(self, menu_type, bl=None):
         global user_name, debug_mode, paused
+        obstacles_menu.clear()
         if rectangle_instance.line_list:
             rectangle_instance.line_list.clear()
         if self.button_list or self.switch_list:
@@ -1562,6 +1673,11 @@ class Menu:
         }
         self.button_list.append(button_properties)
 
+        vertices = vertices_from_aabb((pos_x, pos_y), (width, height))
+        distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
+        #if distance_to_mouse < lighting_class.light_radius:
+        obstacles_menu.append((vertices, distance_to_mouse, button_label))
+
     def create_switch(self, pos_x, pos_y, width, height, color1, color2, shadow_factor, label, button_label,
                       switch_state, switch_states_amount):
         # Create a dynamic body for the switch
@@ -1697,10 +1813,19 @@ class Menu:
             width, height = button_props["width"], button_props["height"]
             half_width, half_height = width // 2, height // 2
             if button_props["button_label"] == "Ball BL":
-                button_props["pos_x"] = balls[0].body.position[0] - half_width
-                button_props["pos_y"] = balls[0].body.position[1] - half_height + 100
+                pos_x = balls[0].body.position[0] - half_width
+                button_props["pos_x"] = pos_x
+                pos_y = balls[0].body.position[1] - half_height + 100
+                button_props["pos_y"] = pos_y
                 button_props["body"].position = pymunk.Vec2d(button_props["pos_x"] + half_width,
                                                              button_props["pos_y"] + half_height)
+                for idx, obstacle in enumerate(obstacles_menu):  # Use enumerate to get the index of each obstacle
+                    if obstacle[2] == "Ball BL":
+                        vertices = vertices_from_aabb((pos_x, pos_y), (width, height))
+                        distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
+                        # Update the obstacle in the list by directly modifying the list at the index
+                        obstacles_menu[idx] = (vertices, distance_to_mouse, obstacle[2])
+
                 for shape in button_props["body"].shapes:
                     shape.cache_bb()  # Update the bounding box of the shape to match the new position
             pos_x, pos_y = button_props["pos_x"], button_props["pos_y"]
@@ -2321,13 +2446,13 @@ class Upgrade:
 
 class Lighting:
     def __init__(self):
-        self.light_radius = 1000
+        self.light_radius = 2000
 
         # Set the ambient light to 50%
-        engine.set_ambient(int(255*bg_color[0]), int(255*bg_color[1]), int(255*bg_color[2]), 128)
+        engine.set_ambient(int(255*bg_color[0]), int(255*bg_color[1]), int(200*bg_color[2]), 128)
         # Create and add a light
         self.light = PointLight(position=(0, 0), power=0.8, radius=self.light_radius)
-        self.light.set_color(100, 100, 100, 255)
+        self.light.set_color(100, 100, 80, 255)
         engine.lights.append(self.light)
 
     def draw_lighting(self):
@@ -2335,9 +2460,15 @@ class Lighting:
         self.light.position = mouse_pos
 
         engine.hulls.clear()
+
+        obstacles.extend(obstacles_menu)
         for obstacle in obstacles:
             obstacles.sort(key=lambda obs: obstacle[1])
+
         obstacles = obstacles[:40]
+        #for obstacle in obstacles:
+        #    print(obstacle[1], end=' ')
+
         for vertices in obstacles:
             hull = Hull(vertices[0])
             engine.hulls.append(hull)
@@ -2348,6 +2479,7 @@ class Lighting:
         engine.render_texture(screen_tex, FOREGROUND, pygame.Rect(0, 0, screen_tex.width, screen_tex.height), pygame.Rect(0, 0, screen_tex.width, screen_tex.height))
         engine.render()
         screen_layer.clear(0, 0, 0, 0)
+        obstacles.clear()
 
 
 lighting_class = Lighting()
