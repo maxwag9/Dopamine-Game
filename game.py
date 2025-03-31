@@ -1,4 +1,7 @@
+import colorsys
 import ctypes
+import hashlib
+import json
 import math
 import os
 import random
@@ -126,7 +129,7 @@ target_tps = 20
 target_tick_time = 1 / target_tps
 target_itps = 60
 target_input_tick_time = 1 / target_itps
-target_fps = 240
+target_fps = 120
 target_frame_time = 1 / target_fps
 prev_time = time.time()
 no_sleep_frame_time = 0.05
@@ -197,6 +200,9 @@ def switch_to_borderless():
     screen_res = (tv_width, tv_height)
     for _ in range(2):
         engine = LightingEngine(screen_res=screen_res, native_res=screen_res, lightmap_res=screen_res, noframe=True, vsync=True)
+        print(screen_res)
+        engine.graphics.ctx.release()
+#        engine.graphics.
         screen_layer = engine.graphics.make_layer(screen_res)
         #render_engine = pygame_light2d.RenderEngine(tv_width, tv_height, )
         user32.ShowWindow(hwnd, 1)  # Show the window normally (not minimized)
@@ -208,6 +214,7 @@ def switch_to_windowed():
     global engine, screen_res, screen_layer
     screen_res = (screen_width, screen_height)
     engine = LightingEngine(screen_res=screen_res, native_res=screen_res, lightmap_res=screen_res, resizable=True, vsync=True)
+    print(screen_res)
     screen_layer = engine.graphics.make_layer(screen_res)
     null_window_position(0, 1)
     user32.ShowWindow(hwnd, 3)  # Maximize the window when switching
@@ -385,9 +392,9 @@ def vertices_from_aabb(position, size):
     """
     Generates the vertices for a rectangle based on the given position and size.
 
-    :param position: tuple (x, y), position of the top-left corner of the rectangle.
-    :param size: tuple (width, height), size of the rectangle.
-    :return: list of vertices (as tuples of coordinates).
+    :param position: Tuple (x, y), position of the top-left corner of the rectangle.
+    :param size: Tuple (width, height), size of the rectangle.
+    :return: List of vertices (as tuples of coordinates).
     """
     x, y = position
     width, height = size
@@ -417,7 +424,7 @@ def vertices_from_ball(center, radius, num_vertices, angle1=0, angle2=2 * math.p
     Returns:
     - List of vertices (x, y) approximating the circle
     """
-    # Initialize vertices list with the center
+    # Initialize a vertices list with the center
     vertices = [center]
 
     # Generate the vertices by evenly distributing angles between angle1 and angle2
@@ -470,11 +477,11 @@ class GameState:
     def __init__(self):
         # Use a fixed filename in the current working directory
         # Get the user's Documents folder
+        self.game_state_applied = False
         user_folder = os.path.expanduser("~")
         documents_folder = os.path.join(user_folder, "Documents")
         global user_name
         user_name = os.path.basename(user_folder)
-        menu.change_label("Hello there " + str(user_name) + "!", "Username BL")
         # Construct the path to the save file
         self.save_folder = os.path.join(documents_folder, "dg")
 
@@ -565,12 +572,16 @@ class GameState:
                 self.gamestate_list.append(gamestate)
 
     def apply_load_ingame(self):
+        #menu.change_label("Hello there " + str(user_name) + "!", "Username BL")
         if len(self.gamestate_list) != 0:
             menu.change_label("Reddings: " + str(self.gamestate_list[0]["reddings"]), "Reddings BL")
-            for i in range(len(self.gamestate_list)):
-                ch = self.gamestate_list[i]
-                crosshair.create_honeycomb_crosshairs(0, 0, ch["crosshair_size"], ch["damage"], ch["shooting_speed"],
-                                                      (255, 0, 0))
+            if not self.game_state_applied:
+                if len(self.gamestate_list) > 1:
+                    crosshair.crosshair_list[0]["size"] = self.gamestate_list[0]["crosshair_size"]
+                    for i in range(len(self.gamestate_list)-1):
+                        ch = self.gamestate_list[i]
+                        crosshair.create_honeycomb_crosshairs(0, 0, ch["crosshair_size"], ch["damage"], ch["shooting_speed"],
+                                                              (255, 0, 0))
 
 
 class Rectangles:
@@ -629,10 +640,10 @@ class Particle:
         def create_looks_group(looks_id):
             """Helper function to create a new looks group."""
             particle["looks_id"] = looks_id
-            print("partikel: ", particle["looks_id"], color)
+            print("particle: ", particle["looks_id"], color)
             self.looks_ids.append((looks_id, color))
             self.rendering_groups.append(
-                ([], color))  # Add new rendering group
+                ([], color))  # Add a new rendering group
 
         # If there's no looks_id yet, or the list is empty, create the first looks group
         if particle["looks_id"] is None and len(self.looks_ids) == 0:
@@ -910,10 +921,10 @@ class Ball:
                     ball_pos.x, max(0, int(min(ball_pos.y, screen_height))))  # Clamp position inside bounds
         else:
             self.body.velocity = (0, 0)
-        vertices = vertices_from_ball(self.body.position, self.radius, 8)
-        distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
+        #vertices = vertices_from_ball(self.body.position, self.radius, 8)
+        #distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
         # if distance_to_mouse < lighting_class.light_radius:
-        obstacles.append((vertices, distance_to_mouse))
+        #obstacles.append((vertices, int(distance_to_mouse)))
 
     def draw(self):
         # Draw the ball using pygame
@@ -942,7 +953,7 @@ class Enemy:
             print(red_nemesis["looks_id"], color)
             self.looks_ids.append((looks_id, color, edge_color))
             self.rendering_groups.append(
-                ([], [], (color, edge_color)))  # Add new rendering group
+                ([], [], (color, edge_color)))  # Add a new rendering group
 
         # If there's no looks_id yet, or the list is empty, create the first looks group
         if red_nemesis["looks_id"] is None and len(self.looks_ids) == 0:
@@ -1145,7 +1156,7 @@ class Enemy:
 
         if twentieth_frame:
             # Handle wave logic if enemy count drops below the threshold
-            if 1 <= len(self.red_nemesis_list) < 200:
+            if 1 <= len(self.red_nemesis_list) < 50:
                 collision_mode = 1 - collision_mode  # Toggle collision mode
                 self.wave()
                 print("CREATED ENEMIES", len(self.red_nemesis_list))
@@ -1176,7 +1187,7 @@ class Enemy:
             vertices = get_rotated_vertices(pos_x, pos_y, size, rotation)
             distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
             if distance_to_mouse < lighting_class.light_radius:
-                obstacles.append((vertices, distance_to_mouse))
+                obstacles.append((vertices, int(distance_to_mouse)))
 
             # Draw HP bar if the enemy was attacked
             if red_nemesis["is_attacked"]:
@@ -1330,7 +1341,9 @@ class Bomb:
 class Crosshair:
     def __init__(self):
         self.crosshair_list = []
-        self.offset_id = -2
+        self.offset_id = -1
+        self.max_animation_time = 10
+        self.click = False
 
     def create_crosshair(self, pos_x, pos_y, size, damage, shooting_speed, color, offset):
         crosshair_body = pymunk.Body(body_type=pymunk.Body.STATIC)
@@ -1342,6 +1355,8 @@ class Crosshair:
             "pos_x": pos_x,
             "pos_y": pos_y,
             "size": size,
+            "og_size": 0,
+            "clicked_og_size": 0,
             "shooting_speed": shooting_speed,
             "damage": damage,
             "color": color,
@@ -1351,7 +1366,8 @@ class Crosshair:
             "body": crosshair_body,
             "shape": shape,
             "surface": engine.graphics.make_layer((size, size)),
-            "og_size": 0
+            "shrinking": False,
+            "animation_time": -1
         }
         self.crosshair_list.append(crosshair_props)
 
@@ -1373,14 +1389,38 @@ class Crosshair:
             offset_x, offset_y = offsets[self.offset_id]
             self.create_crosshair(center_x, center_y, size, damage, shooting_speed, color, (offset_x, offset_y))
 
+    def animate_crosshair(self, cross_shoot, animation_type):
+        if animation_type == "animated_click":
+            if mouse_button_held[1] and mouse_button_held["1 tick click"]:
+                if cross_shoot["animation_time"] <= 0:  # Prevent spam clicking by only starting if not animating
+                    cross_shoot["clicked_og_size"] = cross_shoot["og_size"]
+                    cross_shoot["animation_time"] = self.max_animation_time
+                    cross_shoot["shrinking"] = True
+
+            if cross_shoot["animation_time"] >= 0:
+
+                progress = cross_shoot["animation_time"] / self.max_animation_time
+                shrink_strength = 0.2  # Adjust this value to control how much the size shrinks/grows
+                if cross_shoot["shrinking"]:
+                    cross_shoot["size"] = int(
+                        cross_shoot["clicked_og_size"] * (1 - shrink_strength + shrink_strength * progress))
+                    if progress <= 0.5:  # Switch to growing phase
+                        cross_shoot["shrinking"] = False
+                else:
+                    cross_shoot["size"] = int(cross_shoot["clicked_og_size"] * (1 - shrink_strength * progress))
+
+                cross_shoot["animation_time"] -= 1
+
     def shoot(self, visual=False):
+
         cross_shoot = self.crosshair_list[0]
+
         if not cross_shoot["shot_allowed"]:
             elapsed_time = pygame.time.get_ticks() - cross_shoot.get("last_shot_time", 0)
             if elapsed_time >= 1 / cross_shoot["shooting_speed"] * 1000:  # Convert speed to milliseconds
                 cross_shoot["shot_allowed"] = True
-        for red_nemesis in enemies.red_nemesis_list:
-            for cross_collision in self.crosshair_list:
+        for cross_collision in self.crosshair_list:
+            for red_nemesis in enemies.red_nemesis_list:
                 if check_collision(
                         cross_collision["shape"],
                         red_nemesis["shape"]):
@@ -1404,47 +1444,50 @@ class Crosshair:
                                                        cross_move["pos_y"])
 
             cross_move["shape"].cache_bb()  # Update the bounding box of the shape to match the new position
+            self.animate_crosshair(cross_move, "animated_click")
 
     #def change_crosshair_props(self, pos_x, pos_y, size, damage, shooting_speed, color):
 
     def draw(self):
+        #print(len(self.crosshair_list), self.crosshair_list)
         for cross_draw in self.crosshair_list:
             size = cross_draw["size"]
             half_size = size / 2
             color = cross_draw["color"]
             pos_x = cross_draw["pos_x"]
             pos_y = cross_draw["pos_y"]
+            #print(cross_draw["og_size"], cross_draw["size"], cross_draw["clicked_og_size"])
             #pygame.draw.rect(screen, color, (pos_x-size/2, pos_y-size/2, size, size))
-
             # Pre-calculate sizes to avoid repeating division
             if cross_draw["size"] != cross_draw["og_size"]:
                 cross_draw["og_size"] = cross_draw["size"]
                 cross_draw["shape"] = resize_shape(no_physics_space, cross_draw["body"], cross_draw["shape"], cross_draw["size"])
+                if size != 0:
+                    third_size = size * 0.33
+                    sixth_size = size * 0.16
+                    pos_x_plus_half_size = size + half_size
+                    pos_x_minus_half_size = half_size
+                    pos_y_plus_half_size = size + half_size
+                    pos_y_minus_half_size = half_size
 
-                third_size = size * 0.33
-                sixth_size = size * 0.16
-                pos_x_plus_half_size = size + half_size
-                pos_x_minus_half_size = half_size
-                pos_y_plus_half_size = size + half_size
-                pos_y_minus_half_size = half_size
+                    # Create a surface to hold all the rectangles
 
-                # Create a surface to hold all the rectangles
-                cross_draw["surface"] = engine.graphics.make_layer((size*2, size*2))
+                    cross_draw["surface"] = engine.graphics.make_layer((size*2, size*2))
 
-                # Pre-calculate the rectangles once
-                rects = [
-                    (pos_x_plus_half_size - third_size, pos_y_plus_half_size - sixth_size, third_size, sixth_size),
-                    (pos_x_minus_half_size, pos_y_plus_half_size - sixth_size, third_size, sixth_size),
-                    (pos_x_plus_half_size - third_size, pos_y_minus_half_size, third_size, sixth_size),
-                    (pos_x_minus_half_size, pos_y_minus_half_size, third_size, sixth_size),
-                    (pos_x_plus_half_size - sixth_size, pos_y_plus_half_size - third_size, sixth_size, third_size),
-                    (pos_x_plus_half_size - sixth_size, pos_y_minus_half_size, sixth_size, third_size),
-                    (pos_x_minus_half_size, pos_y_plus_half_size - third_size, sixth_size, third_size),
-                    (pos_x_minus_half_size, pos_y_minus_half_size, sixth_size, third_size)
-                ]
-                # Fill the surface with the rectangles
-                for rect in rects:
-                    engine.graphics.render_rectangle(cross_draw["surface"], color, (rect[0], rect[1]), rect[2], rect[3])
+                    # Pre-calculate the rectangles once
+                    rects = [
+                        (pos_x_plus_half_size - third_size, pos_y_plus_half_size - sixth_size, third_size, sixth_size),
+                        (pos_x_minus_half_size, pos_y_plus_half_size - sixth_size, third_size, sixth_size),
+                        (pos_x_plus_half_size - third_size, pos_y_minus_half_size, third_size, sixth_size),
+                        (pos_x_minus_half_size, pos_y_minus_half_size, third_size, sixth_size),
+                        (pos_x_plus_half_size - sixth_size, pos_y_plus_half_size - third_size, sixth_size, third_size),
+                        (pos_x_plus_half_size - sixth_size, pos_y_minus_half_size, sixth_size, third_size),
+                        (pos_x_minus_half_size, pos_y_plus_half_size - third_size, sixth_size, third_size),
+                        (pos_x_minus_half_size, pos_y_minus_half_size, sixth_size, third_size)
+                    ]
+                    # Fill the surface with the rectangles
+                    for rect in rects:
+                        engine.graphics.render_rectangle(cross_draw["surface"], color, (rect[0], rect[1]), rect[2], rect[3])
 
             # Blit the surface to the screen
             engine.graphics.render(cross_draw["surface"].texture, screen_layer, (pos_x - size, pos_y - size))
@@ -1452,6 +1495,7 @@ class Crosshair:
 
 class Menu:
     def __init__(self, init_menu_type):
+        self.initialized = False
         self.font_cache = {}
         self.button_list = []
         self.switch_list = []
@@ -1459,12 +1503,14 @@ class Menu:
         self.change_menu(init_menu_type)
         self.font = pygame.font.Font(None, 30)
         self.playing = False
+        self.initialized = True
 
     def change_menu(self, menu_type, bl=None):
         global user_name, debug_mode, paused
         obstacles_menu.clear()
         if rectangle_instance.line_list:
             rectangle_instance.line_list.clear()
+
         if self.button_list or self.switch_list:
             for remove_button in self.button_list:
                 no_physics_space.remove(remove_button["body"], remove_button["shape"])
@@ -1480,7 +1526,7 @@ class Menu:
 
         if menu_type == 1:
             # Settings menu
-            self.create_button(screen_layer.size[0] / 10, screen_layer.size[0] / 2 - 300, 140, 100,
+            self.create_button(screen_layer.size[0] / 4, screen_layer.size[0] / 10, 140, 100,
                                (220/255, 10/255, 0),
                                (220/255, 100/255, 80/255),
                                0.5, "Main menu", "Main menu BL")
@@ -1560,6 +1606,8 @@ class Menu:
                 (screen_width / 10, screen_height / 6 + 3 * button_height)  # Right Stick Y
             ]
 
+
+
             # Create PS4 controller buttons
             self.create_button(0.90 * screen_layer.size[0], 10, 140, 40, (220, 40, 0), (220, 100, 80), 0.5,
                                "Save Controls",
@@ -1616,6 +1664,12 @@ class Menu:
             if crosshair.crosshair_list:
                 for i in range((len(crosshair.crosshair_list) - 1) - 1, -1, -1):
                     crosshair.crosshair_list.pop(i + 1)
+
+            self.create_switch(screen_layer.size[0] / 2 - 600, screen_layer.size[1] / 2 - 300, 300,
+                               50, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Controller on?", "controller mode BL",
+                               joystick, 2)
+
             self.create_button(50, 500, 500, 60, (0, 0, 255/255),
                                (100/255, 100/255, 80/255), 0.5, "Ball", "Ball BL")
             self.create_button(screen_layer.size[0] / 2 - 175, screen_layer.size[1] / 2 - 300, 350,
@@ -1628,11 +1682,17 @@ class Menu:
                                bg_color, 0.5, "Hello there " + str(user_name) + "!", "Username BL")
             paused = 0
             print('Main menu opened')
+        elif menu_type == 98:
+            # Map menu
+            game_map.generate_map(0)
+            self.create_button(screen_layer.size[0] / 2 - 175, screen_layer.size[1] / 2 - 300, 350,
+                               70, (220/255, 10/255, 0),
+                               (220/255, 100/255, 80/255), 0.5, "Play level", "Play battle BL")
         elif menu_type == 99:
             '''In-Game GUI'''
-            self.create_button(screen_layer.size[0] / 7, 10, 100, 40, (220, 10, 0), (220, 100, 80),
+            self.create_button(screen_layer.size[0] / 7, 10, 100, 40, (220/255, 10/255, 0), (220/255, 100/255, 80/255),
                                0.5, "Main menu", "Main menu 2 BL")
-            self.create_button(screen_layer.size[0] / 5, 10, 100, 40, (220, 10, 0), (220, 100, 80),
+            self.create_button(screen_layer.size[0] / 5, 10, 100, 40, (220/255, 10/255, 0), (220/255, 100/255, 80/255),
                                0.5, "Upgrades", "Upgrade menu BL")
             paused = 2
             if bl != "Back to the game BL":
@@ -1641,8 +1701,13 @@ class Menu:
         else:
             '''If the menu_type is not the In-Game GUI or Main menu, then create 'Back to the game' button'''
             self.create_button(screen_layer.size[0] / 1.5, screen_layer.size[1] / 2 - 300, 170, 70,
-                               (220, 100, 0),
-                               (160, 100, 80), 0.5, "Back to the game", "Back to the game BL")
+                               (220/255, 100/255, 0),
+                               (160/255, 100/255, 80/255), 0.5, "Back to the game", "Back to the game BL")
+
+        if self.initialized:
+            print(game_state.game_state_applied, self.initialized)
+            game_state.apply_load_ingame()
+            game_state.game_state_applied = True
 
     def create_button(self, pos_x, pos_y, width, height, color1, color2, shadow_factor, label, button_label,
                       dependent_position=None):
@@ -1676,7 +1741,7 @@ class Menu:
         vertices = vertices_from_aabb((pos_x, pos_y), (width, height))
         distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
         #if distance_to_mouse < lighting_class.light_radius:
-        obstacles_menu.append((vertices, distance_to_mouse, button_label))
+        obstacles_menu.append((vertices, int(distance_to_mouse), button_label))
 
     def create_switch(self, pos_x, pos_y, width, height, color1, color2, shadow_factor, label, button_label,
                       switch_state, switch_states_amount):
@@ -1718,6 +1783,7 @@ class Menu:
             if i == switch_state:
                 slider_position = [position[0] + hitbox_width / 2 - width / 20, position[1] - 6, 0]
 
+        switch_texture = engine.graphics.make_layer((screen_width, screen_height))
         # Define the switch properties
         switch_properties = {
             "pos_x": pos_x,
@@ -1742,13 +1808,17 @@ class Menu:
             "switch_positions": switch_positions,
             "switch_states_amount": switch_states_amount,
             "movement_cache": 0,
-            "previous_texture": None,
-            "slider_texture": None,
+            "previous_hash": None,
+            "switch_texture": switch_texture,
             "body": switch_body,
             "shapes": hitboxes  # Store the shapes for collision detection
         }
 
         self.switch_list.append(switch_properties)
+        vertices = vertices_from_aabb((pos_x, pos_y), (width, height))
+        distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
+        #if distance_to_mouse < lighting_class.light_radius:
+        obstacles_menu.append((vertices, int(distance_to_mouse), button_label))
 
     def change_label(self, new_label, button_label):
         for button_props in self.button_list:
@@ -1758,12 +1828,15 @@ class Menu:
                 #print(f"Label changed from {old_label} to {new_label}")
 
     @staticmethod
-    def calculate_shadow_color(color, shadow_factor):
+    def calculate_shadow_color(color, shadow_factor, normalized=True):
         """
         Calculate a shadow color based on the input color by darkening it.
         shadow_factor: 0.0 to 1.0, lower values mean darker shadows.
         """
-        return tuple(int(c * shadow_factor) for c in color)
+        if normalized:
+            return tuple(c * shadow_factor for c in color)
+        else:
+            return tuple(int(c * shadow_factor) for c in color)
 
     def draw_text(self, text, center_x, center_y, button_width, button_height):
         """
@@ -1807,6 +1880,13 @@ class Menu:
         # Render the cached text
         engine.graphics.render(text_texture, screen_layer, text_pos)
 
+    @staticmethod
+    def get_switch_hash(switch):
+        """Returns a hash representing the current state of switch, excluding 'previous_hash'."""
+        switch_copy = switch.copy()
+        switch_copy.pop("previous_hash", None)  # Remove previous hash to prevent self-modification
+        return hashlib.md5(json.dumps(switch_copy, sort_keys=True, default=str).encode()).hexdigest()
+
     def draw_menu(self):
         # Iterate over the list of buttons and draw each one
         for button_props in self.button_list:
@@ -1824,7 +1904,7 @@ class Menu:
                         vertices = vertices_from_aabb((pos_x, pos_y), (width, height))
                         distance_to_mouse = get_distance(vertices[0][0], vertices[0][1], mouse_pos[0], mouse_pos[1])
                         # Update the obstacle in the list by directly modifying the list at the index
-                        obstacles_menu[idx] = (vertices, distance_to_mouse, obstacle[2])
+                        obstacles_menu[idx] = (vertices, int(distance_to_mouse), obstacle[2])
 
                 for shape in button_props["body"].shapes:
                     shape.cache_bb()  # Update the bounding box of the shape to match the new position
@@ -1852,7 +1932,7 @@ class Menu:
                                                      width, height)
 
                 button_props["previous_texture"] = button_props["button_texture"]
-                save_texture_as_png(button_props["button_texture"].texture, "outputted.png")
+                #save_texture_as_png(button_props["button_texture"].texture, "outputted.png")
 
             engine.graphics.render(button_props["button_texture"].texture, screen_layer, (pos_x, pos_y))
 
@@ -1866,35 +1946,45 @@ class Menu:
             if switch["is_pressed"]:
                 switch["shadow_factor"] = 0.3
 
-            engine.graphics.render_rectangle(screen_layer, switch["color1"],
-                                             (switch["pos_x"] - 6, switch["pos_y"] - 6), switch["width"] + 12, switch["height"] + 12)
-
-            if not switch["switch_texture"] == switch["previous_texture"] or switch["switch_texture"] is None:
+            # engine.graphics.render_rectangle(screen_layer, switch["color1"],
+            # (switch["pos_x"] - 6, switch["pos_y"] - 6), switch["width"] + 12, switch["height"] + 12)
+            current_hash = self.get_switch_hash(switch)  # Excluding previous_hash
+            switch_texture = switch["switch_texture"]
+            if current_hash != switch["previous_hash"]:
+                def render_hitboxes():
+                    for e in range(len(switch["switch_positions"])):
+                        position = switch["switch_positions"][e]
+                        engine.graphics.render_rectangle(switch_texture, self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]), (position[0], position[1]), position[2], position[3])
+                switch_texture.clear(0,0,0,0)
                 # Background of the slider
+                engine.graphics.render_rectangle(switch_texture, switch["color1"], (switch["pos_x"] - 6, switch["pos_y"] - 6), switch["width"] + 12,
+                                                 switch["height"] + 12)
+
+                render_hitboxes()
+
                 if switch["width"] > switch["height"]:
                     switch["slider_size"][0], switch["slider_size"][1] = switch["width"] / 10, switch["height"] + 12
 
-                    engine.graphics.render_rectangle(switch["switch_texture"], switch["color2"], (switch["slider_position"][0] - 2 - switch["slider_size"][0] / 2,
+                    engine.graphics.render_rectangle(switch_texture, switch["color2"], (switch["slider_position"][0] - 2 - switch["slider_size"][0] / 2,
                                                switch["slider_position"][1] - 2), switch["slider_size"][0] + 4, switch["slider_size"][1] + 4)
-                    engine.graphics.render_rectangle(switch["switch_texture"], self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]), (switch["slider_position"][0] + self.shadow_movement - switch["slider_size"][0] / 2,
+                    engine.graphics.render_rectangle(switch_texture, self.calculate_shadow_color(switch["color2"], switch["shadow_factor"], True), (switch["slider_position"][0] + self.shadow_movement - switch["slider_size"][0] / 2,
                         switch["slider_position"][1] + self.shadow_movement), switch["slider_size"][0] + 2, switch["slider_size"][1] + 2)
-                    engine.graphics.render_rectangle(switch["switch_texture"], switch["color1"], (switch["slider_position"][0] - self.shadow_movement - switch["slider_size"][0] / 2,
-                        switch["slider_position"][1] - self.shadow_movement), switch["slider_size"][0], switch["slider_size"][1])
+                    engine.graphics.render_rectangle(switch_texture, switch["color1"], (switch["slider_position"][0] - self.shadow_movement - switch["slider_size"][0] / 2, switch["slider_position"][1] - self.shadow_movement), switch["slider_size"][0], switch["slider_size"][1])
+                    #save_texture_as_png(switch["switch_texture"].texture, "nags.png")
                 else:
                     switch["slider_size"][0], switch["slider_size"][1] = switch["width"] + 12, switch["height"] / 10
 
-                    engine.graphics.render_rectangle(switch["switch_texture"], switch["color2"], (switch["slider_position"][0] - 2,
+                    engine.graphics.render_rectangle(switch_texture, switch["color2"], (switch["slider_position"][0] - 2,
                                                switch["slider_position"][1] - 2 - switch["slider_size"][1] / 2), switch["slider_size"][0] + 4, switch["slider_size"][1] + 4)
-                    engine.graphics.render_rectangle(switch["switch_texture"], self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]), (switch["slider_position"][0] + self.shadow_movement, switch["slider_position"][1] - switch["slider_size"][1] / 2 + self.shadow_movement),
+                    engine.graphics.render_rectangle(switch_texture, self.calculate_shadow_color(switch["color2"], switch["shadow_factor"], True), (switch["slider_position"][0] + self.shadow_movement, switch["slider_position"][1] - switch["slider_size"][1] / 2 + self.shadow_movement),
                                                      switch["slider_size"][0] + 2, switch["slider_size"][1] + 2)
-                    engine.graphics.render_rectangle(switch["switch_texture"], switch["color1"], (switch["slider_position"][0] - self.shadow_movement, switch["slider_position"][1] - self.shadow_movement - switch["slider_size"][1] / 2),
+                    engine.graphics.render_rectangle(switch_texture, switch["color1"], (switch["slider_position"][0] - self.shadow_movement, switch["slider_position"][1] - self.shadow_movement - switch["slider_size"][1] / 2),
                                                      switch["slider_size"][0], switch["slider_size"][1])
 
-                for e in range(len(switch["switch_positions"])):
-                    position = switch["switch_positions"][e]
-                    engine.graphics.render_rectangle(switch["switch_texture"], self.calculate_shadow_color(switch["color2"], switch["shadow_factor"]), (position[0], position[1]), position[2], position[3])
-                switch["previous_texture"] = switch["switch_texture"]
+                switch["previous_hash"] = current_hash
 
+            engine.graphics.render(switch_texture.texture, screen_layer)
+            switch["switch_texture"] = switch_texture
             self.draw_text(switch["label"], switch["pos_x"] + switch["width"] // 2,
                            switch["pos_y"] + switch["height"] // 2, switch["width"], switch["height"])
 
@@ -1933,7 +2023,7 @@ class Menu:
                         self.button_assigner(switch["label"], switch["button_label"], switch["switch_state"])
 
     def button_assigner(self, label, bl, switch_option=0):
-        global listening
+        global listening, joystick
         if bl == "Back to the game BL":
             self.change_menu(99, bl)
         elif bl == "Main menu 2 BL":
@@ -1948,9 +2038,11 @@ class Menu:
                 self.change_menu(0)
             else:
                 self.change_menu(4)
-        elif bl == "Play BL":
+        elif bl == "Play battle BL":
             self.change_menu(99)
             self.playing = True
+        elif bl == "Play BL":
+            self.change_menu(98)
         elif bl == "Save BL":
             game_state.save()
         elif bl == "Save Controls BL":
@@ -1985,6 +2077,18 @@ class Menu:
         elif bl == "collision mode BL":
             global collision_mode
             collision_mode = switch_option
+        elif bl == "controller mode BL":
+            if switch_option == 0:
+                joystick = False
+            elif switch_option == 1:
+                joystick = False
+                if pygame.joystick.get_count() > 0:
+                    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+                    joystick.init()
+                    print(f"Connected to: {joystick.get_name()}")
+                else:
+                    joystick = False
+                    print("No joystick detected.")
         elif 'BLU' in bl:
             print(bl)
             upgrade_instance.upgrade_smth(label)
@@ -2159,6 +2263,101 @@ class Menu:
 
                 if frame_counter % 60 == 0:
                     player.timer = not player.timer
+
+
+class Map:
+    def __init__(self):
+        self.city = False
+        self.grid_size = screen_width//10
+        self.grid_positions = {"rows":[], "columns":[]}
+        self.line_vertices = []
+        self.light_list = []
+        self.bs = 0
+
+    def create_grid(self):
+        rows = screen_height // self.grid_size+1
+        columns = screen_width // self.grid_size+1
+        for i in range(rows):
+            row = self.grid_size * i
+            self.grid_positions["rows"].append(row)
+        for i in range(columns):
+            column = self.grid_size * i
+            self.grid_positions["columns"].append(column)
+
+    def generate_map(self, seed):
+        self.city = True
+        self.create_grid()
+        random.seed(seed)  # Set the seed for reproducibility
+
+        self.light_list = []  # Clear previous lights
+
+        # Iterate through the grid squares
+        for row in range(len(self.grid_positions["rows"]) - 1):
+            for col in range(len(self.grid_positions["columns"]) - 1):
+                # Decide randomly if this square gets a light (low probability for preference of no light)
+                if random.random() < 0.6:  # 30% chance of spawning a light
+                    # Get the boundaries of the current grid square
+                    x_min = self.grid_positions["columns"][col]
+                    x_max = self.grid_positions["columns"][col + 1]
+                    y_min = self.grid_positions["rows"][row]
+                    y_max = self.grid_positions["rows"][row + 1]
+
+                    # Generate a random position inside the square
+                    light_x = random.uniform(x_min, x_max)
+                    light_y = random.uniform(y_min, y_max)
+
+                    # Create the light with a random radius
+                    radius = random.uniform(150, 500)  # Adjust as needed
+                    light = PointLight(position=(light_x, light_y), power=0.7, radius=radius)
+
+                    hue = random.random()  # Random hue (0 to 1)
+                    rgb = colorsys.hsv_to_rgb(hue, 1, 1)  # Max saturation and brightness
+                    # Convert from 0-1 range to 0-255
+                    r, g, b = [int(c * 255) for c in rgb]
+                    light.set_color(r, g, b, 255)
+
+                    # Add the light to the list
+                    self.light_list.append(light)
+
+
+
+    def move(self):
+        pass
+
+    def draw(self, dt):
+        dt = dt+dt
+        self.bs = dt
+        if self.city:
+            thickness = 3  # Example thickness, adjust as needed
+
+            for row in self.grid_positions["rows"]:
+                self.line_vertices.extend(((0, row), (screen_width, row)))
+
+                # Calculate distance from the middle of the line to the mouse
+                middle_x, middle_y = screen_width / 2, row
+                distance_to_mouse = get_distance(middle_x, middle_y, mouse_pos[0], mouse_pos[1])
+
+                # Define the rectangle for the horizontal line with distance
+                obstacles.append(([(0, row - thickness // 2), (screen_width, row - thickness // 2),
+                                   (screen_width, row + thickness // 2), (0, row + thickness // 2)], distance_to_mouse))
+
+            for column in self.grid_positions["columns"]:
+                self.line_vertices.extend(((column, 0), (column, screen_height)))
+
+                # Calculate distance from the middle of the line to the mouse
+                middle_x, middle_y = column, screen_height / 2
+                distance_to_mouse = get_distance(middle_x, middle_y, mouse_pos[0], mouse_pos[1])
+
+                # Define the rectangle for the vertical line with distance
+                obstacles.append(([(column - thickness // 2, 0), (column + thickness // 2, 0),
+                                   (column + thickness // 2, screen_height), (column - thickness // 2, screen_height)],
+                                  distance_to_mouse))
+
+            #print(self.grid_positions["columns"])
+
+            if self.line_vertices:
+                engine.graphics.render_lines(screen_layer, (255, 200, 200), self.line_vertices, strip=False)
+            self.line_vertices.clear()
 
 
 class Controls:
@@ -2446,28 +2645,34 @@ class Upgrade:
 
 class Lighting:
     def __init__(self):
-        self.light_radius = 2000
+        self.light_radius = 1000
+        self.crosshair_light_radius = 200
 
         # Set the ambient light to 50%
-        engine.set_ambient(int(255*bg_color[0]), int(255*bg_color[1]), int(200*bg_color[2]), 128)
+        engine.set_ambient(int(255*bg_color[0])+20, int(255*bg_color[1])+20, int(200*bg_color[2]+20), 128)
         # Create and add a light
-        self.light = PointLight(position=(0, 0), power=0.8, radius=self.light_radius)
-        self.light.set_color(100, 100, 80, 255)
-        engine.lights.append(self.light)
+        self.light = PointLight(position=(0, 0), power=0.7, radius=self.crosshair_light_radius)
+        self.ball_light = PointLight(position=(0, 0), power=0.8, radius=self.light_radius*0.25)
+        self.light.set_color(155, 0, 50, 255)
+        self.ball_light.set_color(100, 100, 20, 255)
+
+
 
     def draw_lighting(self):
         global mouse_pos, engine, obstacles
+        engine.lights.append(self.light)
+        engine.lights.append(self.ball_light)
+        engine.lights.extend(game_map.light_list)
         self.light.position = mouse_pos
+        self.ball_light.position =  (int(balls[0].body.position.x), int(balls[0].body.position.y))
 
         engine.hulls.clear()
 
         obstacles.extend(obstacles_menu)
-        for obstacle in obstacles:
-            obstacles.sort(key=lambda obs: obstacle[1])
-
+        obstacles.sort(key=lambda obs: obs[1])
         obstacles = obstacles[:40]
-        #for obstacle in obstacles:
-        #    print(obstacle[1], end=' ')
+        # for obstacle in obstacles:
+        #     print(obstacle[1], end=' ')
 
         for vertices in obstacles:
             hull = Hull(vertices[0])
@@ -2480,22 +2685,23 @@ class Lighting:
         engine.render()
         screen_layer.clear(0, 0, 0, 0)
         obstacles.clear()
+        engine.lights.clear()
 
-
+game_state = GameState()
 lighting_class = Lighting()
 rectangle_instance = Rectangles()
 crosshair = Crosshair()
 menu = Menu(0)
 controls = Controls()
-game_state = GameState()
 balls = [Ball(100, 100, 15, [200, 200], (255, 255, 0))]
 bombs = []
 enemies = Enemy()
+game_map = Map()
 upgrade_instance = Upgrade()
 particles = Particle()
 crosshair.create_crosshair(0, 0, 80, 40, 5, (255, 0, 0), (0, 0))
 mb_down_toggled = 0
-mouse_button_held = {1: False, 3: False, "Press_Buffer": False}
+mouse_button_held = {1: False, 3: False, "Press_Buffer": False, "1 tick click": False}
 font = pygame.font.Font(None, 30)
 precompute_unit_rotations()
 
@@ -2531,6 +2737,7 @@ def tick():
     # Update the velocity based on WASD input, while respecting the max_velocity
 
     enemies.move()
+    game_map.move()
 
 
 def input_tick():
@@ -2643,7 +2850,11 @@ def input_tick():
             elif event.key == pygame.K_ESCAPE:
                 running = False
         if event.type == pygame.MOUSEBUTTONDOWN:
-            mouse_button_held["Press_Buffer"] = True
+            mouse_presses = pygame.mouse.get_pressed()
+            if mouse_presses[0]:
+                mouse_button_held["1 tick click"] = True
+            else: mouse_button_held["1 tick click"] = False
+            mouse_button_held["Press_Buffer"] = True  # Mark press occurred
             if event.button == 1:  # Left mouse button
                 mouse_button_held[1] = True
                 menu.check_button_press(mouse_pos, "visual")
@@ -2654,6 +2865,7 @@ def input_tick():
                 #                      False, None)
                 bombs.append(Bomb(mouse_pos[0], mouse_pos[1], (60, 80), (1, 1), (20, 70, 50), 300, True))
         elif event.type == pygame.MOUSEBUTTONUP:
+            mouse_button_held["1 tick click"] = False
             if event.button == 1:  # Left mouse button
                 mouse_button_held[1] = False
                 if mouse_button_held["Press_Buffer"]:
@@ -2713,7 +2925,7 @@ def render(dt):
         mouse_pos = pygame.mouse.get_pos()
     crosshair.move_crosshair(mouse_pos[0], mouse_pos[1])
     rectangle_instance.draw_lines(None, None, None, None, None, "draw")
-
+    game_map.draw(dt)
     particles.draw()
     for ball in balls:
         ball.move()
@@ -2836,17 +3048,20 @@ def main():
         input_accumulator += dt
         frame_counter += 1
 
+        while input_accumulator >= target_input_tick_time:  # Run TPS updates
+            input_tick()
+            input_accumulator -= target_input_tick_time
+
         # Update (logical) section – for TPS
         while accumulator >= target_tick_time:  # Run TPS updates
             tick()
             accumulator -= target_tick_time
 
-        while input_accumulator >= target_input_tick_time:  # Run TPS updates
-            input_tick()
-            input_accumulator -= target_input_tick_time
+
 
         alpha = accumulator / target_tick_time
         render(dt)
+        mouse_button_held["1 tick click"] = False
         clock.tick(target_fps)
     pygame.quit()
 

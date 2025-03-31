@@ -1,5 +1,11 @@
 <?xml version="1.0" ?>
 <game_states>
     <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
+    <crosshair crosshair_size="50" shooting_speed="1" damage="10" reddings="59"/>
     <graphics debug_mode="3"/>
 </game_states>
