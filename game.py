@@ -182,7 +182,7 @@ def resize_shape(pymunk_space, body, old_shape, new_size):
     if isinstance(new_size, (int, float)):
         new_size = (new_size, new_size)
 
-    # Create a new shape with the updated size
+    # Create a new shape with the updated size (cool)
     new_shape = pymunk.Poly.create_box(body, new_size)
 
     # Add the new shape to the space
